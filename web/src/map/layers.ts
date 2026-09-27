@@ -36,13 +36,14 @@ export function initLayers(map: MlMap) {
   const firstRoad = layers.find((l) => l.type === 'line' && 'source-layer' in l && l['source-layer'] === 'transportation')?.id ?? firstSymbol;
   const firstBuilding = buildingLayerIds(map)[0] ?? firstSymbol;
 
-  map.addSource('imagery', { type: 'raster', tiles: [ESRI], tileSize: 256, maxzoom: 19, attribution: 'Imagery © Esri' });
+  map.addSource('imagery', { type: 'raster', tiles: [ESRI], tileSize: 256, maxzoom: 17, attribution: 'Imagery © Esri' });
   map.addLayer({ id: 'imagery', type: 'raster', source: 'imagery', layout: { visibility: 'none' } }, firstRoad);
 
   const dem = { type: 'raster-dem' as const, tiles: [TERRARIUM], tileSize: 256, maxzoom: 15, encoding: 'terrarium' as const,
     attribution: 'Terrain: <a href="https://registry.opendata.aws/terrain-tiles/">AWS Terrain Tiles</a>' };
   map.addSource('dem', dem);
   map.addSource('terrain', dem); // a second source for 3D terrain, as MapLibre recommends
+  map.setTerrain({ source: 'terrain', exaggeration: 1.4 }); // always on, so tilting by hand shows relief too
   map.addLayer({
     id: 'hillshade', type: 'hillshade', source: 'dem',
     paint: { 'hillshade-illumination-anchor': 'map', 'hillshade-method': 'combined', 'hillshade-exaggeration': 0.5 },
@@ -207,8 +208,8 @@ export function setImagery(map: MlMap, on: boolean) {
   map.setLayoutProperty('imagery', 'visibility', on ? 'visible' : 'none');
 }
 
+/** Terrain height is always on; the 3D toggle only tilts the camera. */
 export function setTerrain3d(map: MlMap, on: boolean) {
-  map.setTerrain(on ? { source: 'terrain', exaggeration: 1.4 } : null);
   map.easeTo({ pitch: on ? 60 : 0, duration: 600 });
 }
 
