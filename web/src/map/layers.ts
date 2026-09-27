@@ -5,6 +5,8 @@ import { destination, wedge } from './geo.js';
 import { buildingShadows, MIN_SHADOW_ALT } from './shadows.js';
 
 const SHADOW_COLOR = '#0a0c1a';
+import { altitudeM, pitchBlend, planeLabel, planeShadowPos } from './planes3d.js';
+import { Planes3dLayer } from './planes3dLayer.js';
 import { moodAt, moonPos, sunPos, sunriseSunset } from './sun.js';
 
 export const STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
@@ -150,6 +152,24 @@ export function initFeedLayers(map: MlMap) {
   map.addLayer({ id: 'planes-ghost', type: 'circle', source: 'planes-ghost', layout: { visibility: 'none' },
     paint: { 'circle-radius': 5, 'circle-color': '#dfe7ff', 'circle-opacity': 0.5, 'circle-stroke-color': '#dfe7ff', 'circle-stroke-width': 1 } });
 
+  // 3D planes (pitched view): ground shadow silhouette and ground label, then the custom WebGL layer on top.
+  // They cross-fade with the flat ✈ symbol on pitch (applyPlanePitch).
+  map.addSource('planes-shadow', { type: 'geojson', data: empty() });
+  map.addLayer({ id: 'planes-shadow', type: 'symbol', source: 'planes-shadow', layout: {
+    visibility: 'none', 'text-field': '✈', 'text-size': ['interpolate', ['linear'], ['zoom'], 8, 16, 14, 30],
+    'text-rotate': ['get', 'track'], 'text-rotation-alignment': 'map', 'text-pitch-alignment': 'map', 'text-allow-overlap': true, 'text-ignore-placement': true,
+  }, paint: { 'text-color': SHADOW_COLOR, 'text-opacity': 0 } }, 'planes');
+  map.addSource('planes-label', { type: 'geojson', data: empty() });
+  map.addLayer({ id: 'planes-label', type: 'symbol', source: 'planes-label', layout: {
+    visibility: 'none', 'text-field': ['get', 'label'], 'text-font': FONT, 'text-size': 11, 'text-offset': [0, 1],
+    'text-rotation-alignment': 'map', 'text-pitch-alignment': 'map', 'text-allow-overlap': true, 'text-ignore-placement': true,
+  }, paint: { 'text-color': '#dfe7ff', 'text-halo-color': '#0e1014', 'text-halo-width': 1.2, 'text-opacity': 0 } }, 'planes');
+  planes3d = new Planes3dLayer();
+  map.addLayer(planes3d);
+  if (map.getLayer('planes-3d')) map.setLayoutProperty('planes-3d', 'visibility', 'none');
+  map.on('pitch', () => applyPlanePitch(map));
+  applyPlanePitch(map);
+
   // Trains: live (realtime position) vs scheduled (interpolated).
   map.addSource('trains', { type: 'geojson', data: empty() });
   // Live: solid green with a bright ring. Scheduled (estimate): hollow grey ring, so it reads as a guess.
@@ -181,11 +201,26 @@ export function updateRail(map: MlMap, fc: GeoJSON.FeatureCollection) {
   setData(map, 'rail', fc);
 }
 
+/** Every layer under the legend's Planes toggle. */
+export const PLANE_LAYERS = ['planes', 'planes-proj', 'planes-ghost', 'planes-shadow', 'planes-label', 'planes-3d'];
+let planes3d: Planes3dLayer | null = null;
+
+/** Cross-fade flat ✈ (pitch ~0) and the 3D marker, shadow and label (pitched). Opacity only, so legend visibility stands. */
+export function applyPlanePitch(map: MlMap) {
+  const t = pitchBlend(map.getPitch());
+  if (map.getLayer('planes')) map.setPaintProperty('planes', 'text-opacity', 1 - t);
+  if (map.getLayer('planes-shadow')) map.setPaintProperty('planes-shadow', 'text-opacity', 0.35 * t);
+  if (map.getLayer('planes-label')) map.setPaintProperty('planes-label', 'text-opacity', t);
+}
+
+type PlaneIn = { hex: string; flight?: string; lat: number; lon: number; track: number | null; alt_baro?: number | 'ground' | null };
+
 export function updatePlanes(
   map: MlMap,
-  planes: { hex: string; lat: number; lon: number; track: number | null }[],
+  planes: PlaneIn[],
   projections: { hex: string; coords: [number, number][] }[],
-  ghosts: { hex: string; lat: number; lon: number }[]
+  ghosts: { hex: string; lat: number; lon: number }[],
+  sun?: { azimuth: number; altitude: number },
 ) {
   setData(map, 'planes', { type: 'FeatureCollection', features: planes.map((p) => ({
     type: 'Feature', properties: { id: p.hex, track: p.track ?? 0 }, geometry: { type: 'Point', coordinates: [p.lon, p.lat] },
@@ -193,6 +228,20 @@ export function updatePlanes(
   setData(map, 'planes-proj', { type: 'FeatureCollection',
     features: projections.map((p) => ({ type: 'Feature', properties: { id: p.hex }, geometry: { type: 'LineString', coordinates: p.coords } })) });
   setData(map, 'planes-ghost', { type: 'FeatureCollection', features: ghosts.map((g) => ({ type: 'Feature', properties: { id: g.hex }, geometry: { type: 'Point', coordinates: [g.lon, g.lat] } })) });
+
+  // 3D: planes with a known altitude. Shadow from the sun at map time (none at night).
+  const withAlt = planes.map((p) => ({ p, alt: altitudeM(p.alt_baro) }));
+  planes3d?.setPlanes(withAlt.filter((x) => x.alt != null).map(({ p, alt }) => ({ lng: p.lon, lat: p.lat, altM: alt!, track: p.track ?? 0 })));
+  setData(map, 'planes-label', { type: 'FeatureCollection', features: withAlt.map(({ p, alt }) => ({
+    type: 'Feature', properties: { id: p.hex, label: planeLabel(p.flight ?? '', p.hex, alt) }, geometry: { type: 'Point', coordinates: [p.lon, p.lat] },
+  })) });
+  const shadows: GeoJSON.Feature[] = [];
+  if (sun) for (const { p, alt } of withAlt) {
+    if (alt == null || alt <= 0) continue;
+    const pos = planeShadowPos(p.lon, p.lat, alt, sun);
+    if (pos) shadows.push({ type: 'Feature', properties: { id: p.hex, track: p.track ?? 0 }, geometry: { type: 'Point', coordinates: pos } });
+  }
+  setData(map, 'planes-shadow', { type: 'FeatureCollection', features: shadows });
 }
 
 export function updateTrains(map: MlMap, positions: { tripId: string; route: string; headsign: string; status: string; delaySec: number; lat: number; lng: number }[]) {
@@ -230,6 +279,17 @@ export function updateMood(map: MlMap, sun: { azimuth: number; altitude: number 
   map.setPaintProperty('mood', 'fill-color', mood.color);
   map.setPaintProperty('mood', 'fill-opacity', mood.opacity);
   map.setPaintProperty('imagery', 'raster-brightness-max', Math.max(0.35, 1 - mood.opacity * 0.9));
+  // 3D buildings: lit from the sun's direction, warm near the horizon, dim and flat at night.
+  map.setLight({
+    anchor: 'map',
+    position: [1.5, sun.azimuth, 90 - Math.min(88, Math.max(10, sun.altitude))],
+    color: !up ? '#6a7090' : sun.altitude < 8 ? '#ffc58a' : '#ffffff',
+    intensity: up ? 0.5 : 0.15,
+  });
+  const shade = up ? (sun.altitude < 8 ? '#cbbfb3' : '#d9d6d0') : '#2a2e3d';
+  for (const id of buildingLayerIds(map)) {
+    if (map.getLayer(id)?.type === 'fill-extrusion') map.setPaintProperty(id, 'fill-extrusion-color', shade);
+  }
 }
 
 /** Current sun and moon azimuth rays from `origin`, plus the day's sunrise and sunset azimuths. */

@@ -57,7 +57,7 @@ export const CATEGORIES: Category[] = [
   { key: 'sun', label: 'Sun/moon rays & light wedges', group: 'Overlays', swatch: 'line', color: '#ffd23f', defaultOn: true, match: ids('rays', 'wedges') },
   { key: 'rail', label: 'Rail network', group: 'Overlays', swatch: 'line', color: '#4cc3ff', defaultOn: false, match: ids('rail-lines', 'rail-industrial') },
   { key: 'trains', label: 'Trains', group: 'Overlays', swatch: 'ring', color: '#22c55e', defaultOn: false, match: ids('trains') },
-  { key: 'planes', label: 'Planes', group: 'Overlays', swatch: 'dashed', color: '#dfe7ff', defaultOn: false, match: ids('planes', 'planes-proj', 'planes-ghost') },
+  { key: 'planes', label: 'Planes', group: 'Overlays', swatch: 'dashed', color: '#dfe7ff', defaultOn: false, match: ids('planes', 'planes-proj', 'planes-ghost', 'planes-shadow', 'planes-label', 'planes-3d') },
   { key: 'candidates', label: 'OSM candidates', group: 'Overlays', swatch: 'dot', color: '#6b7280', defaultOn: false, match: ids('candidates') },
 ];
 

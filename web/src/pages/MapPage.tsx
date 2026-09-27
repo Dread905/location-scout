@@ -5,7 +5,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import { api, Candidate, Place, Spot, User } from '../api.js';
 import {
-  CLICKABLE, initFeedLayers, initLayers, setImagery, setLayerVisible, setTerrain3d, STYLE_URL, updateCandidates, updateDraft,
+  CLICKABLE, initFeedLayers, initLayers, PLANE_LAYERS, setImagery, setLayerVisible, setTerrain3d, STYLE_URL, updateCandidates, updateDraft,
   updateMood, updatePlacesAndSpots, updatePlanes, updateRail, updateRays, updateShadows, updateTrains, updateWedges,
 } from '../map/layers.js';
 import { goodNow, sunPos } from '../map/sun.js';
@@ -99,7 +99,7 @@ export default function MapPage({ user }: { user: User | null }) {
   // Planes: on demand, cached 10s server-side, refreshed every 15s while on and the tab is visible.
   useEffect(() => {
     if (!map) return;
-    setLayerVisible(map, ['planes', 'planes-proj', 'planes-ghost'], planesOn);
+    setLayerVisible(map, PLANE_LAYERS, planesOn);
     if (!planesOn) return;
     let stop = false;
     const tick = () => {
@@ -115,7 +115,7 @@ export default function MapPage({ user }: { user: User | null }) {
         const ghosts = aheadMin > 0.5 && aheadMin <= 15
           ? planes.map((p) => { const d = deadReckon(p, aheadMin); return d ? { hex: p.hex, lat: d.lat, lon: d.lon } : null; }).filter((g): g is { hex: string; lat: number; lon: number } => g !== null)
           : [];
-        updatePlanes(map, planes, projections, ghosts);
+        updatePlanes(map, planes, projections, ghosts, sunPos(time, centre.lat, centre.lng));
       }).catch(() => {});
     };
     tick();
