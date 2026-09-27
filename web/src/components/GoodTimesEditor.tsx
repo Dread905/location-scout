@@ -58,7 +58,7 @@ export default function GoodTimesEditor({ value, onChange }: { value: GoodTimes;
           <button type="button" key={k} className="chip active" title="Remove" onClick={() => set({ eventKeywords: value.eventKeywords.filter((x) => x !== k) })}>{k} ✕</button>
         ))}
       </div>
-      <div className="feedrow" style={{ marginTop: 6 }}>
+      <div className="feedrow mt-6">
         <input value={keyword} placeholder="e.g. Bathurst 1000" onChange={(e) => setKeyword(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addKeyword(); } }} />
         <button type="button" onClick={addKeyword}>Add</button>

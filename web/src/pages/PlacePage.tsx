@@ -37,10 +37,10 @@ export default function PlacePage() {
     <div className="page">
       <div className="placehead">
         <div>
-          <h1 style={{ margin: 0 }}>{place.name}</h1>
+          <h1 className="m-0">{place.name}</h1>
           <p className="hint">{spots.length} spot{spots.length === 1 ? '' : 's'} · <Link to={`/?place=${place.id}`}>Show on map</Link></p>
         </div>
-        <input type="date" value={ymd(time)} style={{ width: 'auto' }} onChange={(e) => {
+        <input type="date" value={ymd(time)} className="w-auto" onChange={(e) => {
           if (!e.target.value) return;
           const [y, m, d] = e.target.value.split('-').map(Number);
           setTime(new Date(y, m - 1, d, time.getHours(), time.getMinutes()));
@@ -64,7 +64,7 @@ export default function PlacePage() {
                 </div>
               )}
               <DayStrip lat={s.lat} lng={s.lng} time={time} />
-              <p className="hint" style={{ marginTop: 8 }}>{next ? `Next: ${formatAlignment(next)}` : s.facingDeg != null ? 'No alignment within a year' : ''}</p>
+              <p className="hint spotcard__next">{next ? `Next: ${formatAlignment(next)}` : s.facingDeg != null ? 'No alignment within a year' : ''}</p>
               <GoodTimesChips value={s.goodTimes} />
             </div>
           );

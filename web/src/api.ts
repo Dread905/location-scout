@@ -85,8 +85,9 @@ export interface Settings {
   allowSignup: boolean;
   allowPrivateRemotes: boolean;
   eventScoutUrl: string;
-  freightSpeedLoadedKmh: number;
-  freightSpeedEmptyKmh: number;
+  /** Never the key itself — only whether one is set, and whether the environment pins it. */
+  tfnswApiKeySet: boolean;
+  tfnswApiKeyFromEnv: boolean;
   corsOrigins: string[];
 }
 
@@ -118,12 +119,6 @@ export interface Remote {
 export interface Plane { hex: string; flight: string; lat: number; lon: number; track: number | null; gs: number | null; alt_baro: number | null; t: string; seen: number }
 
 export interface RailFeature extends GeoJSON.Feature { properties: { id: string; kind: 'rail' | 'industrial' | 'mine' | 'works'; usage?: string; service?: string; name?: string } }
-
-export type SightingKind = 'coal' | 'grain' | 'intermodal' | 'other';
-export interface Sighting {
-  id: string; ownerId: string; kind: SightingKind; direction: string; lat: number; lng: number; lineRef: string;
-  seenAt: string; notes: string; visibility: Visibility; source: string; sourceRef: string; loaded: boolean | null;
-}
 
 export interface TrainPosition { tripId: string; routeId: string; route: string; headsign: string; lat: number; lng: number; status: 'live' | 'scheduled'; delaySec: number }
 export interface TrainPass { tripId: string; routeId: string; route: string; headsign: string; at: string }
@@ -200,7 +195,7 @@ export const api = {
 
   // --- settings ---
   settings: () => fetch('/api/settings').then((r) => json<Settings>(r)),
-  saveSettings: (s: Partial<Settings>) =>
+  saveSettings: (s: Partial<Settings> & { tfnswApiKey?: string; clearTfnswApiKey?: boolean }) =>
     fetch('/api/settings', { method: 'PUT', headers: jsonHeaders, body: JSON.stringify(s) }).then((r) => json<Settings>(r)),
 
   // --- geocode / version ---
@@ -261,23 +256,13 @@ export const api = {
   addRemote: (url: string) =>
     fetch('/api/remotes', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ url }) }).then((r) => json<Remote>(r)),
   deleteRemote: (id: string) => fetch(`/api/remotes/${id}`, { method: 'DELETE' }).then((r) => json<{ ok: boolean }>(r)),
-  syncRemote: (id: string) => fetch(`/api/remotes/${id}/sync`, { method: 'POST' }).then((r) => json<{ places: number; spots: number; sightings: number }>(r)),
+  syncRemote: (id: string) => fetch(`/api/remotes/${id}/sync`, { method: 'POST' }).then((r) => json<{ places: number; spots: number }>(r)),
 
   // --- planes ---
   planes: (lat: number, lng: number, nm = 40) => fetch(`/api/planes?lat=${lat}&lng=${lng}&nm=${nm}`).then((r) => json<Plane[]>(r)),
 
-  // --- rail + sightings ---
+  // --- rail ---
   rail: () => fetch('/api/rail').then((r) => json<GeoJSON.FeatureCollection>(r)),
-  sightings: (query: { bbox?: string; near?: string; radiusKm?: number } = {}) => {
-    const params = new URLSearchParams();
-    for (const [k, v] of Object.entries(query)) if (v !== undefined) params.set(k, String(v));
-    const qs = params.toString();
-    return fetch(`/api/sightings${qs ? `?${qs}` : ''}`).then((r) => json<Sighting[]>(r));
-  },
-  createSighting: (s: Partial<Sighting>) =>
-    fetch('/api/sightings', { method: 'POST', headers: jsonHeaders, body: JSON.stringify(s) }).then((r) => json<Sighting>(r)),
-  deleteSighting: (id: string) => fetch(`/api/sightings/${id}`, { method: 'DELETE' }).then((r) => json<{ ok: boolean }>(r)),
-  spotFreight: (spotId: string) => fetch(`/api/spots/${spotId}/freight`).then((r) => json<{ pattern: string | null }>(r)),
 
   // --- trains ---
   trainsStatus: () => fetch('/api/trains/status').then((r) => json<TrainsStatus>(r)),

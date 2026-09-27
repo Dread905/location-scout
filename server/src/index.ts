@@ -13,17 +13,16 @@ import {
   newSessionToken, seedAdminFromEnv, sessionUser, setUserPassword, setUserRole, userCount,
 } from './authStore.js';
 import { corsDecision, readOrigins } from './cors.js';
-import { getSettings, saveSettings, Settings } from './settings.js';
+import { applySettingsUpdate, getSettings, publicSettings, tfnswKey } from './settings.js';
 import { geocode } from './geocode.js';
 import { bboxFromRadius, haversine, parseBbox, parseLatLng } from './geo.js';
 import { parseGoodTimes, GoodTimesError, DEFAULT_GOOD_TIMES } from './goodTimes.js';
 import { fetchPlanes } from './feeds/planes.js';
-import { describePassPattern, passHistogram, snapToNearestLine } from './feeds/freight.js';
 import {
   combinedFeedData, combinedRealtime, nextPasses, predictTrainPositions, tripCount, TRAIN_FEEDS,
 } from './feeds/trains.js';
 import { nearbyFor } from './feeds/eventScout.js';
-import { getCachedRail, railLinesFromGeoJson } from './sources/rail.js';
+import { getCachedRail } from './sources/rail.js';
 import { commonsNearbyCached } from './sources/commons.js';
 import { deleteImages, detectImageType, MAX_PHOTO_BYTES, parseMultipart, saveImage } from './photos.js';
 import { buildGpx } from './gpx.js';
@@ -199,13 +198,17 @@ app.delete('/api/users/:id', (req, res) => {
 
 // --- settings -----------------------------------------------------------------
 
-app.get('/api/settings', (_req, res) => res.json(getSettings(db)));
+app.get('/api/settings', (_req, res) => res.json(publicSettings(getSettings(db))));
 app.put('/api/settings', (req, res) => {
   if (!requireAdmin(req, res)) return;
-  const current = getSettings(db);
-  const next: Settings = { ...current, ...(req.body as Partial<Settings>) };
-  saveSettings(db, next);
-  res.json(next);
+  const { settings, keyChanged } = applySettingsUpdate(db, (req.body ?? {}) as Record<string, unknown>);
+  // A new key means timetables can now be pulled: start the import in the background.
+  if (keyChanged && settings.tfnswApiKey) {
+    for (const name of ['trains-static-nswtrains', 'trains-static-sydneytrains']) {
+      tasks.run(name, { force: true }).catch(() => {});
+    }
+  }
+  res.json(publicSettings(settings));
 });
 
 // --- geocode / version ----------------------------------------------------------
@@ -646,115 +649,26 @@ app.get('/api/planes', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// --- rail network + freight sightings --------------------------------------------
+// --- rail network --------------------------------------------
 
 app.get('/api/rail', (_req, res) => res.json(getCachedRail(db)));
-
-interface SightingRow {
-  id: string; owner_id: string; kind: string; direction: string; lat: number; lng: number; line_ref: string;
-  seen_at: string; notes: string; visibility: Visibility; source: string; source_ref: string; loaded: number | null;
-}
-const SIGHTING_KINDS = ['coal', 'grain', 'intermodal', 'other'];
-function sightingJson(r: SightingRow) {
-  return {
-    id: r.id, ownerId: r.owner_id, kind: r.kind, direction: r.direction, lat: r.lat, lng: r.lng, lineRef: r.line_ref,
-    seenAt: r.seen_at, notes: r.notes, visibility: r.visibility, source: r.source, sourceRef: r.source_ref,
-    loaded: r.loaded == null ? null : Boolean(r.loaded),
-  };
-}
-
-app.get('/api/sightings', (req, res) => {
-  try {
-    const { sql, params } = listVisibilityWhere(req.user);
-    const clauses = [sql];
-    const args: any[] = [...params]; // mixed string/number bind params, as in the spots list route above
-    let bbox = null as ReturnType<typeof parseBbox> | null;
-    if (typeof req.query.bbox === 'string') bbox = parseBbox(req.query.bbox);
-    else if (typeof req.query.near === 'string') {
-      const { lat, lng } = parseLatLng(req.query.near);
-      bbox = bboxFromRadius(lat, lng, Number(req.query.radiusKm ?? 10));
-    }
-    if (bbox) { clauses.push('lat BETWEEN ? AND ? AND lng BETWEEN ? AND ?'); args.push(bbox.south, bbox.north, bbox.west, bbox.east); }
-    const rows = db.handle.prepare(`SELECT * FROM sightings WHERE ${clauses.join(' AND ')} ORDER BY seen_at DESC`).all(...args) as unknown as SightingRow[];
-    res.json(rows.map(sightingJson));
-  } catch (err) {
-    res.status(400).json({ error: (err as Error).message });
-  }
-});
-
-app.post('/api/sightings', (req, res) => {
-  const b = req.body as Record<string, unknown>;
-  if (typeof b.lat !== 'number' || typeof b.lng !== 'number') return res.status(400).json({ error: 'lat and lng must be numbers' });
-  if (typeof b.kind !== 'string' || !SIGHTING_KINDS.includes(b.kind)) return res.status(400).json({ error: 'kind must be coal, grain, intermodal or other' });
-  const lines = railLinesFromGeoJson(getCachedRail(db));
-  const snapped = snapToNearestLine(lines, { lat: b.lat, lng: b.lng }, 0.5);
-  const visibility = isVisibility(b.visibility) ? b.visibility : 'private';
-  const id = crypto.randomUUID();
-  db.handle
-    .prepare(
-      `INSERT INTO sightings (id, owner_id, kind, direction, lat, lng, line_ref, seen_at, notes, visibility, source, source_ref, loaded)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', '', ?)`
-    )
-    .run(id, req.user!.id, b.kind, String(b.direction ?? ''), snapped?.lat ?? b.lat, snapped?.lng ?? b.lng, snapped?.lineRef ?? '',
-      typeof b.seenAt === 'string' ? b.seenAt : new Date().toISOString(), String(b.notes ?? ''), visibility,
-      typeof b.loaded === 'boolean' ? (b.loaded ? 1 : 0) : null);
-  res.status(201).json(sightingJson(db.handle.prepare('SELECT * FROM sightings WHERE id = ?').get(id) as unknown as SightingRow));
-});
-
-app.get('/api/sightings/:id', (req, res) => {
-  const row = db.handle.prepare('SELECT * FROM sightings WHERE id = ?').get(req.params.id) as unknown as SightingRow | undefined;
-  if (!row || !canRead(row.visibility, row.owner_id, req.user)) return res.status(404).json({ error: 'Not found' });
-  res.json(sightingJson(row));
-});
-
-app.patch('/api/sightings/:id', (req, res) => {
-  const row = db.handle.prepare('SELECT * FROM sightings WHERE id = ?').get(req.params.id) as unknown as SightingRow | undefined;
-  if (!row) return res.status(404).json({ error: 'Not found' });
-  if (!canEdit(row.owner_id, req.user)) return res.status(403).json({ error: 'Forbidden' });
-  const b = req.body as Record<string, unknown>;
-  const next = {
-    kind: typeof b.kind === 'string' && SIGHTING_KINDS.includes(b.kind) ? b.kind : row.kind,
-    direction: typeof b.direction === 'string' ? b.direction : row.direction,
-    notes: typeof b.notes === 'string' ? b.notes : row.notes,
-    visibility: isVisibility(b.visibility) ? b.visibility : row.visibility,
-    loaded: typeof b.loaded === 'boolean' ? (b.loaded ? 1 : 0) : row.loaded,
-  };
-  db.handle.prepare('UPDATE sightings SET kind=?, direction=?, notes=?, visibility=?, loaded=? WHERE id=?')
-    .run(next.kind, next.direction, next.notes, next.visibility, next.loaded, row.id);
-  res.json(sightingJson(db.handle.prepare('SELECT * FROM sightings WHERE id = ?').get(row.id) as unknown as SightingRow));
-});
-
-app.delete('/api/sightings/:id', (req, res) => {
-  const row = db.handle.prepare('SELECT * FROM sightings WHERE id = ?').get(req.params.id) as unknown as SightingRow | undefined;
-  if (!row) return res.status(404).json({ error: 'Not found' });
-  if (!canEdit(row.owner_id, req.user)) return res.status(403).json({ error: 'Forbidden' });
-  db.handle.prepare('DELETE FROM sightings WHERE id = ?').run(row.id);
-  res.json({ ok: true });
-});
-
-app.get('/api/spots/:id/freight', (req, res) => {
-  const spot = db.handle.prepare('SELECT * FROM spots WHERE id = ?').get(req.params.id) as unknown as SpotRow | undefined;
-  if (!spot || !canRead(spot.visibility, spot.owner_id, req.user)) return res.status(404).json({ error: 'Not found' });
-  const { sql, params } = listVisibilityWhere(req.user);
-  const rows = db.handle.prepare(`SELECT lat, lng, seen_at FROM sightings WHERE ${sql}`).all(...params) as { lat: number; lng: number; seen_at: string }[];
-  const histogram = passHistogram(rows.map((r) => ({ lat: r.lat, lng: r.lng, seenAt: r.seen_at })), spot);
-  res.json({ pattern: describePassPattern(histogram) });
-});
 
 // --- trains -----------------------------------------------------------------
 
 app.get('/api/trains/status', (_req, res) => {
-  const configured = Boolean(process.env.TFNSW_API_KEY);
+  const configured = Boolean(tfnswKey(db));
   const lastImport = TRAIN_FEEDS.map((f) => db.getKv(`trains:lastImport:${f}`)).filter((v): v is string => Boolean(v)).sort().at(-1) ?? null;
   res.json({ configured, lastImport, tripCount: tripCount(db) });
 });
 
 app.get('/api/trains', async (req, res, next) => {
   try {
-    const key = process.env.TFNSW_API_KEY;
+    const key = tfnswKey(db);
     if (!key) return res.json({ configured: false, positions: [] });
     const at = req.query.at ? new Date(String(req.query.at)) : new Date();
-    const [feed, realtime] = [combinedFeedData(db), await combinedRealtime(key)];
+    // Realtime describes *now*; only mix it in when asked about (roughly) now.
+    const nearNow = Math.abs(at.getTime() - Date.now()) < 5 * 60_000;
+    const [feed, realtime] = [combinedFeedData(db), nearNow ? await combinedRealtime(key) : []];
     res.json({ configured: true, positions: predictTrainPositions(feed, at, realtime) });
   } catch (err) { next(err); }
 });
@@ -762,7 +676,7 @@ app.get('/api/trains', async (req, res, next) => {
 app.get('/api/spots/:id/trains', (req, res) => {
   const spot = db.handle.prepare('SELECT * FROM spots WHERE id = ?').get(req.params.id) as unknown as SpotRow | undefined;
   if (!spot || !canRead(spot.visibility, spot.owner_id, req.user)) return res.status(404).json({ error: 'Not found' });
-  if (!process.env.TFNSW_API_KEY) return res.json({ configured: false, passes: [] });
+  if (!tfnswKey(db)) return res.json({ configured: false, passes: [] });
   const hours = Number(req.query.hours ?? 6);
   const passes = nextPasses(combinedFeedData(db), spot, hours, new Date());
   res.json({ configured: true, passes });

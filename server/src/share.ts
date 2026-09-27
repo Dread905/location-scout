@@ -6,7 +6,7 @@ import { guardedFetch } from './ssrf.js';
 import { saveImage } from './photos.js';
 
 /**
- * Share bundles: a GeoJSON FeatureCollection of places, spots and sightings,
+ * Share bundles: a GeoJSON FeatureCollection of places and spots,
  * and the upsert that turns one instance's bundle into another's rows. Used
  * both by `GET /api/share/:token` (build) and remote sync (build on the far
  * side, upsert on this one).
@@ -15,7 +15,7 @@ import { saveImage } from './photos.js';
 export interface ShareFeature {
   type: 'Feature';
   geometry: { type: 'Point'; coordinates: [number, number] };
-  properties: Record<string, unknown> & { kind: 'place' | 'spot' | 'sighting'; id: string };
+  properties: Record<string, unknown> & { kind: 'place' | 'spot'; id: string };
 }
 
 export interface ShareBundle {
@@ -32,10 +32,6 @@ interface SpotRow {
   tags: string; facing_deg: number | null; fov_deg: number | null; good_times: string;
   visibility: Visibility; source: string; source_ref: string;
 }
-interface SightingRow {
-  id: string; owner_id: string; kind: string; direction: string; lat: number; lng: number; line_ref: string;
-  seen_at: string; notes: string; visibility: Visibility; source: string; source_ref: string; loaded: number | null;
-}
 interface PhotoRow { id: string; spot_id: string; kind: string; file: string; thumb: string; caption: string; taken_at: string | null }
 
 /** Build the bundle for everything `ownerId` owns. The owner picked what to share by creating the link. */
@@ -46,7 +42,6 @@ export function buildFeatureCollection(
 ): ShareBundle {
   const places = db.handle.prepare('SELECT * FROM places WHERE owner_id = ?').all(ownerId) as unknown as PlaceRow[];
   const spots = db.handle.prepare('SELECT * FROM spots WHERE owner_id = ?').all(ownerId) as unknown as SpotRow[];
-  const sightings = db.handle.prepare('SELECT * FROM sightings WHERE owner_id = ?').all(ownerId) as unknown as SightingRow[];
   const photosBySpot = new Map<string, PhotoRow[]>();
   for (const p of db.handle.prepare('SELECT * FROM photos WHERE spot_id IN (SELECT id FROM spots WHERE owner_id = ?)').all(ownerId) as unknown as PhotoRow[]) {
     const list = photosBySpot.get(p.spot_id) ?? [];
@@ -79,21 +74,10 @@ export function buildFeatureCollection(
       },
     });
   }
-  for (const s of sightings) {
-    features.push({
-      type: 'Feature',
-      geometry: { type: 'Point', coordinates: [s.lng, s.lat] },
-      properties: {
-        kind: 'sighting', id: s.id, sightingKind: s.kind, direction: s.direction, lineRef: s.line_ref,
-        seenAt: s.seen_at, notes: s.notes, visibility: s.visibility, source: s.source, sourceRef: s.source_ref,
-        loaded: s.loaded == null ? null : Boolean(s.loaded),
-      },
-    });
-  }
   return { type: 'FeatureCollection', features };
 }
 
-export interface UpsertResult { places: number; spots: number; sightings: number }
+export interface UpsertResult { places: number; spots: number }
 
 /**
  * `POST /api/import`: a plain GeoJSON FeatureCollection of places and spots,
@@ -180,10 +164,10 @@ export async function upsertBundle(
   fetchPhoto: PhotoFetcher = defaultFetchPhoto
 ): Promise<UpsertResult> {
   const now = new Date().toISOString();
-  const result: UpsertResult = { places: 0, spots: 0, sightings: 0 };
+  const result: UpsertResult = { places: 0, spots: 0 };
   const placeIdMap = new Map<string, string>(); // origin place id -> local place id
 
-  const findBySourceRef = (table: 'places' | 'spots' | 'sightings', sourceRef: string): { id: string } | undefined =>
+  const findBySourceRef = (table: 'places' | 'spots', sourceRef: string): { id: string } | undefined =>
     db.handle.prepare(`SELECT id FROM ${table} WHERE source = 'remote' AND source_ref = ?`).get(sourceRef) as any;
 
   for (const f of bundle.features.filter((x) => x.properties.kind === 'place')) {
@@ -246,25 +230,6 @@ export async function upsertBundle(
         }
       }
     }
-  }
-
-  for (const f of bundle.features.filter((x) => x.properties.kind === 'sighting')) {
-    const p = f.properties;
-    const sourceRef = `${remoteId}:${p.id}`;
-    const [lng, lat] = f.geometry.coordinates;
-    const existing = findBySourceRef('sightings', sourceRef);
-    const localId = existing?.id ?? crypto.randomUUID();
-    db.handle
-      .prepare(
-        `INSERT INTO sightings (id, owner_id, kind, direction, lat, lng, line_ref, seen_at, notes, visibility, source, source_ref, loaded)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'private', 'remote', ?, ?)
-         ON CONFLICT(id) DO UPDATE SET kind=excluded.kind, direction=excluded.direction, lat=excluded.lat,
-           lng=excluded.lng, line_ref=excluded.line_ref, seen_at=excluded.seen_at, notes=excluded.notes, loaded=excluded.loaded`
-      )
-      .run(localId, ownerId, String(p.sightingKind ?? 'other'), String(p.direction ?? ''), lat, lng,
-        String(p.lineRef ?? ''), String(p.seenAt ?? now), String(p.notes ?? ''), sourceRef,
-        typeof p.loaded === 'boolean' ? (p.loaded ? 1 : 0) : null);
-    result.sightings++;
   }
 
   return result;

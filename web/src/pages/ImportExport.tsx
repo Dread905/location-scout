@@ -96,7 +96,7 @@ export default function ImportExport() {
         {status && <p className={`status-line ${status.ok ? 'ok' : 'error'}`}>{status.text}</p>}
         {rows.length > 0 && (
           <>
-            <p className="hint" style={{ marginTop: 12 }}>
+            <p className="hint mt-12">
               {fileName}: {rows.length} found, {rows.filter((r) => r.dup).length} look like duplicates (same name within 50 m) and are unticked.
             </p>
             <div className="tablewrap">
@@ -115,7 +115,7 @@ export default function ImportExport() {
                 </tbody>
               </table>
             </div>
-            <div className="chiprow" style={{ marginTop: 10 }}>
+            <div className="chiprow mt-8">
               <button className="primary" disabled={busy || !included} onClick={() => void commit()}>Import {included}</button>
               <button onClick={() => setRows([])}>Cancel</button>
             </div>
@@ -137,10 +137,10 @@ export default function ImportExport() {
         <h2>Share links</h2>
         <p className="hint">Another Location Scout adds a link under Remotes and syncs your places, spots and photos. Revoke to cut it off.</p>
         <button onClick={async () => { await api.createShare({}); void loadShares(); }}>+ New share link</button>
-        <ul className="plainlist" style={{ marginTop: 10 }}>
+        <ul className="plainlist mt-8">
           {shares.map((s) => (
-            <li key={s.token} className="feedrow" style={{ alignItems: 'center' }}>
-              <code style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', opacity: s.revoked_at ? 0.5 : 1 }}>{shareUrl(s.token)}</code>
+            <li key={s.token} className="feedrow row-center">
+              <code className={`grow ellipsis${s.revoked_at ? ' is-revoked' : ''}`}>{shareUrl(s.token)}</code>
               {s.revoked_at ? <span className="hint">revoked</span> : <>
                 <button onClick={async () => { await navigator.clipboard.writeText(shareUrl(s.token)); setCopied(s.token); }}>{copied === s.token ? 'Copied' : 'Copy'}</button>
                 <button onClick={async () => { if (confirm('Revoke this link?')) { await api.revokeShare(s.token); void loadShares(); } }}>Revoke</button>
@@ -166,10 +166,10 @@ export default function ImportExport() {
         </form>
         <ul className="plainlist">
           {remotes.map((r) => (
-            <li key={r.id} className="feedrow" style={{ alignItems: 'center' }}>
-              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            <li key={r.id} className="feedrow row-center">
+              <span className="grow ellipsis">
                 {r.url}
-                <span className={`status-line ${r.last_error ? 'error' : 'ok'}`} style={{ display: 'block', marginTop: 2 }}>
+                <span className={`status-line status-line--block ${r.last_error ? 'error' : 'ok'}`}>
                   {r.last_error ? r.last_error : r.last_sync ? `Synced ${new Date(r.last_sync).toLocaleString()}` : 'Never synced'}
                 </span>
               </span>

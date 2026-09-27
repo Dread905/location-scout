@@ -23,15 +23,15 @@ export default function Login({ allowSignup, onDone }: { allowSignup: boolean; o
   }
 
   return (
-    <div className="signin" style={{ position: 'static', transform: 'none', margin: '80px auto' }}>
-      <h2 style={{ marginTop: 0 }}>Sign in</h2>
+    <div className="signin signin--page">
+      <h2>Sign in</h2>
       <form onSubmit={submit}>
         <div className="formrow"><label>Username</label><input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus required /></div>
         <div className="formrow"><label>Password</label><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required /></div>
         {error && <p className="status-line error">{error}</p>}
         <button className="primary" type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
       </form>
-      {allowSignup && <p className="hint" style={{ marginTop: 12 }}>No account? <Link to="/signup">Sign up</Link></p>}
+      {allowSignup && <p className="hint mt-12">No account? <Link to="/signup">Sign up</Link></p>}
     </div>
   );
 }

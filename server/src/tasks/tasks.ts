@@ -1,6 +1,6 @@
 import { createRegistry } from './registry.js';
 import { db } from '../db.js';
-import { getSettings, Settings } from '../settings.js';
+import { getSettings, Settings, tfnswKey } from '../settings.js';
 import { syncRemote } from '../share.js';
 import { runRailTask } from '../sources/rail.js';
 import { runCandidatesTask } from '../sources/osm.js';
@@ -19,7 +19,7 @@ function areasOf(settings: Settings) {
 tasks.register({
   name: 'sync-remotes',
   label: 'Sync remotes',
-  description: 'Pull every configured remote instance\'s share link and upsert its spots, places and sightings.',
+  description: 'Pull every configured remote instance\'s share link and upsert its spots and places.',
   schedule: '0 6 * * *', // daily at 6am
   intervalMinutes: () => 24 * 60,
   enabled: () => true,
@@ -32,7 +32,7 @@ tasks.register({
       try {
         const result = await syncRemote(db, remote, allowPrivate);
         db.handle.prepare('UPDATE remotes SET last_sync = ?, last_error = NULL WHERE id = ?').run(new Date().toISOString(), remote.id);
-        log(`${remote.url}: ${result.places} places, ${result.spots} spots, ${result.sightings} sightings`);
+        log(`${remote.url}: ${result.places} places, ${result.spots} spots`);
         ok++;
       } catch (err) {
         const message = (err as Error).message;
@@ -72,10 +72,10 @@ function trainsStaticTask(feed: TrainFeedName, cron: string) {
     description: `Pull the ${feed} GTFS static timetable and keep only trips touching the configured areas.`,
     schedule: cron,
     intervalMinutes: () => 7 * 24 * 60,
-    enabled: () => Boolean(process.env.TFNSW_API_KEY),
+    enabled: () => Boolean(tfnswKey(db)),
     run: (log) => {
-      const key = process.env.TFNSW_API_KEY;
-      if (!key) return Promise.resolve({ ok: true, message: 'Not configured (no TFNSW_API_KEY)' });
+      const key = tfnswKey(db);
+      if (!key) return Promise.resolve({ ok: true, message: 'Not configured (no TfNSW API key)' });
       return importStaticGtfs(db, feed, key, areasOf(getSettings(db)), log);
     },
   });

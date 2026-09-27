@@ -65,7 +65,7 @@ export default function PlaceEditor({ draft, drawing, onDrawing, onChange, onSav
         <button type="button" className={draft.kind === 'polygon' ? 'active' : ''} onClick={() => set({ kind: 'polygon' })}>Area</button>
         <button type="button" className={draft.kind === 'line' ? 'active' : ''} onClick={() => set({ kind: 'line' })}>Line (track)</button>
       </div>
-      <div className="chiprow" style={{ marginTop: 8 }}>
+      <div className="chiprow mt-8">
         <button type="button" className={drawing ? 'primary' : ''} onClick={() => onDrawing(!drawing)}>{drawing ? 'Done drawing' : 'Draw on map'}</button>
         <button type="button" disabled={!draft.coords.length} onClick={() => set({ coords: draft.coords.slice(0, -1) })}>Undo point</button>
         <button type="button" disabled={!draft.coords.length} onClick={() => set({ coords: [] })}>Clear</button>
