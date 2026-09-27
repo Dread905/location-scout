@@ -12,6 +12,7 @@ import {
 } from '../map/layers.js';
 import { due, MotionTracker, planePredict, trainPredict } from '../map/motion.js';
 import { carriageCount } from '../map/trains3d.js';
+import { collectRailTiles, RailSnapper } from '../map/railSnap.js';
 import { goodNow, sunPos } from '../map/sun.js';
 import { Legend } from '../components/Legend.js';
 import { NearbyList } from '../components/NearbyList.js';
@@ -82,6 +83,7 @@ export default function MapPage({ user }: { user: User | null }) {
   // Smooth movement between polls, and follow mode (camera on one vehicle).
   const planeMotion = useRef(new MotionTracker());
   const trainMotion = useRef(new MotionTracker());
+  const railSnapper = useRef(new RailSnapper());
   const planeExtras = useRef<{ sun?: { azimuth: number; altitude: number } }>({});
   const [follow, setFollow] = useState<Follow | null>(null);
   const followRef = useRef<Follow | null>(null);
@@ -159,19 +161,40 @@ export default function MapPage({ user }: { user: User | null }) {
     setLayerVisible(map, TRAIN_LAYERS, trainsOn);
     if (!trainsOn) { trainPopup.current?.remove(); setTrainData([]); return; }
     let stop = false;
+    let raw: TrainPosition[] = [];
+    // Trains the server couldn't snap go onto the basemap's own rail lines (client fallback; see map/railSnap.ts).
+    const show = () => {
+      const positions = railSnapper.current.snap(raw);
+      trainMotion.current.update(positions.map((t) => ({ id: t.tripId, key: trainKey(t), predict: trainPredict(t) })), performance.now());
+      updateTrains(map, positions);
+      setTrainData(positions);
+    };
     const tick = () => {
       if (document.hidden) return;
       api.trains().then((r) => {
         if (stop) return;
-        trainMotion.current.update(r.positions.map((t) => ({ id: t.tripId, key: trainKey(t), predict: trainPredict(t) })), performance.now());
-        updateTrains(map, r.positions);
-        setTrainData(r.positions);
+        raw = r.positions;
+        railSnapper.current.setTiles(collectRailTiles(map));
+        show();
       }).catch(() => {});
     };
+    // New basemap tiles: rebuild the rail graph (throttled) and re-snap if it changed and some train needs it.
+    let pending: ReturnType<typeof setTimeout> | null = null;
+    const onSource = (e: { sourceId?: string; isSourceLoaded?: boolean; tile?: unknown }) => {
+      if (pending || !e.tile || !raw.some((t) => !t.snapped)) return;
+      pending = setTimeout(() => {
+        pending = null;
+        if (!stop && railSnapper.current.setTiles(collectRailTiles(map))) show();
+      }, 1000);
+    };
+    map.on('sourcedata', onSource);
     tick();
     const id = setInterval(tick, TRAINS_POLL_MS);
     document.addEventListener('visibilitychange', tick);
-    return () => { stop = true; clearInterval(id); document.removeEventListener('visibilitychange', tick); };
+    return () => {
+      stop = true; clearInterval(id); if (pending) clearTimeout(pending);
+      map.off('sourcedata', onSource); document.removeEventListener('visibilitychange', tick);
+    };
   }, [map, trainsOn]);
 
   // Candidates: OSM points of interest, fetched by bbox while the layer is on.

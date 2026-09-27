@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildTrackGraph, snapToTrack } from '../src/feeds/trackSnap.js';
 import { bearingDeg, cumulativeKm, emptyFeedData, parseGtfsTime, predictTrainPositions } from '../src/feeds/trains.js';
-import { resetTrackGraphCache, trackGraphFor } from '../src/sources/rail.js';
+import { requestTilesForUnsnapped, resetTrackGraphCache, trackGraphFor } from '../src/sources/rail.js';
 import { createDb } from '../src/db.js';
 
 type P = [number, number];
@@ -143,4 +143,24 @@ test('trackGraphFor: fetches a rail tile around a train the cached network misse
   assert.ok(g2.pts.length > 0);
   assert.equal(calls, 1);
   resetTrackGraphCache();
+});
+
+test('requestTilesForUnsnapped: fetches every tile under an unsnapped consist even with track nearby; failures back off and log once', async () => {
+  resetTrackGraphCache();
+  const db = createDb(':memory:');
+  const asked: string[] = [];
+  const warn = console.warn; const warned: string[] = [];
+  console.warn = (m: string) => { warned.push(m); };
+  try {
+    const failing = async (b: { west: number; south: number }) => { asked.push(`${b.west.toFixed(2)},${b.south.toFixed(2)}`); throw new Error('overpass 429'); };
+    // Lead just east of a tile edge (151.10), consist trailing back west across it.
+    const t = { lat: -33.87, lng: 151.1005, snapped: false, path: [[151.098, -33.87], [151.1005, -33.87]] as [number, number][] };
+    requestTilesForUnsnapped(db, [t, { lat: -33.87, lng: 151.1005, snapped: true }], failing);
+    assert.equal(asked.length, 2, 'both tiles the consist spans');
+    await new Promise((r) => setTimeout(r, 0));
+    requestTilesForUnsnapped(db, [t], failing);
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(asked.length, 2, 'failed tiles not refetched every poll');
+    assert.equal(warned.length, 2, 'one warning per tile');
+  } finally { console.warn = warn; resetTrackGraphCache(); }
 });

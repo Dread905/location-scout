@@ -127,6 +127,8 @@ export interface TrainPosition {
   tripId: string; routeId: string; route: string; headsign: string; lat: number; lng: number; status: 'live' | 'scheduled'; delaySec: number;
   bearing?: number | null; speedMps?: number | null; carriages?: number | null; network?: 'sydneytrains' | 'nswtrains' | null;
   path?: [number, number][]; pathAtKm?: number;
+  /** Server snapped it onto OSM track; when false/absent the client snaps to the basemap's rail lines instead. */
+  snapped?: boolean;
 }
 export interface TrainPass { tripId: string; routeId: string; route: string; headsign: string; at: string }
 export interface TrainsStatus { configured: boolean; lastImport: string | null; tripCount: number }

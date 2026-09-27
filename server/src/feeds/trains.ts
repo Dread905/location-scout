@@ -106,6 +106,8 @@ export interface TrainPosition {
   path?: [number, number][];
   /** Where the train is along `path`, km from its start. */
   pathAtKm?: number;
+  /** True when lat/lng/path were snapped onto OSM track; false means `path` (if any) is the raw GTFS shape. */
+  snapped: boolean;
 }
 
 // --- pure: a slice of the shape around a train --------------------------------------
@@ -243,7 +245,7 @@ export function predictTrainPositions(feed: TrainsFeedData, at: Date, realtime: 
     if (snap) { path = roundPath(snap.path); pathAtKm = snap.atKm; lat = snap.lat; lng = snap.lng; bearing = snap.bearing; }
     out.push({
       tripId: trip.id, routeId: trip.routeId, route: route?.shortName ?? route?.longName ?? '', headsign: trip.headsign, lat, lng, status, delaySec,
-      bearing, speedMps, carriages: rt?.carriages ?? null, network: trip.feed ?? rt?.feed ?? null,
+      bearing, speedMps, carriages: rt?.carriages ?? null, network: trip.feed ?? rt?.feed ?? null, snapped: snap != null,
       ...(path && pathAtKm != null ? { path, pathAtKm } : {}),
     });
   }
@@ -260,7 +262,7 @@ export function predictTrainPositions(feed: TrainsFeedData, at: Date, realtime: 
     out.push({
       tripId: rt.tripId, routeId: trip?.routeId ?? '', route: route?.shortName || route?.longName || '', headsign: trip?.headsign ?? '',
       lat: snap?.lat ?? rt.vehicleLat, lng: snap?.lng ?? rt.vehicleLng, status: 'live', delaySec: rt.delaySec,
-      bearing: snap?.bearing ?? rt.bearing ?? null, speedMps: rt.speedMps ?? null, carriages: rt.carriages ?? null, network: trip?.feed ?? rt.feed ?? null,
+      bearing: snap?.bearing ?? rt.bearing ?? null, speedMps: rt.speedMps ?? null, carriages: rt.carriages ?? null, network: trip?.feed ?? rt.feed ?? null, snapped: snap != null,
       ...(snap ? { path: roundPath(snap.path), pathAtKm: snap.atKm } : {}),
     });
   }

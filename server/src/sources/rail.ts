@@ -138,6 +138,9 @@ export const railTileOf = (lng: number, lat: number): [number, number] => [Math.
 let graphCache: { sig: string; graph: TrackGraph } | null = null;
 const tilesKnown = new Set<string>();
 const tilesInFlight = new Set<string>();
+/** Tile key -> when a fetch last failed; not retried for TILE_RETRY_MS, and logged once per tile. */
+const tilesFailed = new Map<string, number>();
+const TILE_RETRY_MS = 10 * 60_000;
 
 function tileLines(db: Db): { raw: string[]; keys: string[] } {
   const raw: string[] = []; const keys: string[] = [];
@@ -145,15 +148,51 @@ function tileLines(db: Db): { raw: string[]; keys: string[] } {
   return { raw, keys };
 }
 
+type TileFetcher = (b: Bbox) => Promise<{ coords: [number, number][] }[]>;
+const overpassTile: TileFetcher = async (b) =>
+  railLinesFromGeoJson({ type: 'FeatureCollection', features: mapRailElements((await overpassFetch(railQuery([b]))).elements) });
+
+/** Tiles covering a point and (when given) its whole path, so the consist behind a lead near a tile edge snaps too. */
+function tilesFor(t: { lat: number; lng: number; path?: [number, number][] }): [number, number][] {
+  const seen = new Map<string, [number, number]>();
+  for (const [lng, lat] of [[t.lng, t.lat] as [number, number], ...(t.path ?? [])]) {
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    const xy = railTileOf(lng, lat);
+    seen.set(`${xy[0]},${xy[1]}`, xy);
+  }
+  return [...seen.values()];
+}
+
+/** Fetch (in the background) any of these tiles not already cached, in flight, or recently failed. */
+function requestTiles(db: Db, tiles: [number, number][], fetchTile: TileFetcher) {
+  for (const [x, y] of tiles) {
+    const k = tileKey(x, y);
+    if (tilesInFlight.has(k)) continue;
+    if (db.getKv(k) != null) { tilesKnown.add(k); continue; } // cached (maybe by an earlier run of the server)
+    const failedAt = tilesFailed.get(k);
+    if (failedAt != null && Date.now() - failedAt < TILE_RETRY_MS) continue;
+    tilesInFlight.add(k);
+    const b: Bbox = { west: x * RAIL_TILE_DEG, south: y * RAIL_TILE_DEG, east: (x + 1) * RAIL_TILE_DEG, north: (y + 1) * RAIL_TILE_DEG };
+    fetchTile(b)
+      .then((lines) => {
+        db.setKv(k, JSON.stringify(lines.map((l) => ({ coords: l.coords }))), new Date(Date.now() + TILE_TTL_MS).toISOString());
+        tilesKnown.add(k); tilesFailed.delete(k);
+      })
+      .catch((err: unknown) => {
+        if (!tilesFailed.has(k)) console.warn(`[rail] track tile ${k} fetch failed (retrying in ${TILE_RETRY_MS / 60_000} min): ${err instanceof Error ? err.message : String(err)}`);
+        tilesFailed.set(k, Date.now());
+      })
+      .finally(() => tilesInFlight.delete(k));
+  }
+}
+
 /**
  * The track graph for snapping trains: the cached weekly network plus any on-demand tiles. Trains with no track
- * nearby (outside the configured areas) get their tile fetched in the background, so the next poll can snap them —
+ * nearby (outside the configured areas) get their tiles fetched in the background, so the next poll can snap them —
  * independent of whether the Rail overlay is shown. `fetchTile` is injectable for tests.
  */
 export function trackGraphFor(
-  db: Db, trains: { lat: number; lng: number }[],
-  fetchTile: (b: Bbox) => Promise<{ coords: [number, number][] }[]> = async (b) =>
-    railLinesFromGeoJson({ type: 'FeatureCollection', features: mapRailElements((await overpassFetch(railQuery([b]))).elements) }),
+  db: Db, trains: { lat: number; lng: number; path?: [number, number][] }[], fetchTile: TileFetcher = overpassTile,
 ): TrackGraph {
   const base = db.getKv(RAIL_KV_KEY) ?? '';
   const tiles = tileLines(db);
@@ -168,19 +207,19 @@ export function trackGraphFor(
   const graph = graphCache.graph;
   for (const t of trains) {
     if (!Number.isFinite(t.lat) || !Number.isFinite(t.lng) || nearestSegment(graph, [t.lng, t.lat], 0.2)) continue;
-    const [x, y] = railTileOf(t.lng, t.lat);
-    const k = tileKey(x, y);
-    if (tilesInFlight.has(k) || (tilesKnown.has(k) && db.getKv(k) != null)) continue;
-    if (db.getKv(k) != null) { tilesKnown.add(k); continue; } // fetched by an earlier run of the server
-    tilesInFlight.add(k);
-    const b: Bbox = { west: x * RAIL_TILE_DEG, south: y * RAIL_TILE_DEG, east: (x + 1) * RAIL_TILE_DEG, north: (y + 1) * RAIL_TILE_DEG };
-    fetchTile(b)
-      .then((lines) => { db.setKv(k, JSON.stringify(lines.map((l) => ({ coords: l.coords }))), new Date(Date.now() + TILE_TTL_MS).toISOString()); tilesKnown.add(k); })
-      .catch(() => { /* try again on a later poll */ })
-      .finally(() => tilesInFlight.delete(k));
+    requestTiles(db, tilesFor(t), fetchTile);
   }
   return graph;
 }
 
+/**
+ * Trains that didn't snap despite some track nearby (a partial network: another tile's line, only the base area's
+ * edge): fetch every tile under the lead and its path. Before, a tile was only fetched when *nothing* lay within
+ * 200 m, so at a busy spot like Strathfield a neighbouring tile's track kept the train's own tile from ever loading.
+ */
+export function requestTilesForUnsnapped(db: Db, trains: { lat: number; lng: number; path?: [number, number][]; snapped?: boolean }[], fetchTile: TileFetcher = overpassTile) {
+  for (const t of trains) if (!t.snapped) requestTiles(db, tilesFor(t), fetchTile);
+}
+
 /** Forget the in-memory graph and known tiles (tests). */
-export function resetTrackGraphCache() { graphCache = null; tilesKnown.clear(); tilesInFlight.clear(); }
+export function resetTrackGraphCache() { graphCache = null; tilesKnown.clear(); tilesInFlight.clear(); tilesFailed.clear(); }
