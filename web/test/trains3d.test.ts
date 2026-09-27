@@ -59,3 +59,24 @@ test('boxTriangles: 5 faces (no floor), width and height as asked, sitting on th
   assert.ok(roof.every((t) => t.p[2] === 14 || t.p[2] === 16), 'roof is h above each end');
   assert.equal(Math.min(...tris.map((t) => t.p[2])), 10);
 });
+
+test('placeCarriages: on a curve, every carriage has both bogie points on the track and its own heading', () => {
+  // An arc of radius ~300 m (a typical suburban curve), densely sampled, travelling anticlockwise.
+  const R = 0.3; const c: [number, number] = [151.19, -33.89];
+  const k = Math.cos((c[1] * Math.PI) / 180);
+  const path: [number, number][] = [];
+  for (let a = 0; a <= 90; a += 1) {
+    const t = (a * Math.PI) / 180;
+    path.push([c[0] + (R * Math.cos(t)) / (111.32 * k), c[1] + (R * Math.sin(t)) / 111.32]);
+  }
+  const total = distKm(path[0], path[1]) * 90;
+  const cars = placeCarriages({ path, headKm: total * 0.9, head: [0, 0], bearing: null }, 8);
+  const r = (p: [number, number]) => Math.hypot((p[0] - c[0]) * 111.32 * k, (p[1] - c[1]) * 111.32);
+  for (const car of cars) {
+    near(r(car.front), R, 0.0005); // within 0.5 m of the arc
+    near(r(car.rear), R, 0.0005);
+  }
+  // Headings turn steadily from car to car (not one rigid bearing for the whole train).
+  const spread = Math.abs(cars[0].bearing - cars[7].bearing);
+  assert.ok(spread > 25, `expected the consist to bend (~30 deg), got ${spread}`);
+});

@@ -11,6 +11,7 @@ import { parseCsvObjects } from '../csv.js';
 import { Bbox, bboxFromRadius, inBbox } from '../geo.js';
 import { projectOntoLine, pointAtDistanceOnLine, LatLng } from './freight.js';
 import type { TaskLog } from '../tasks/registry.js';
+import { snapToTrack, type TrackGraph } from './trackSnap.js';
 
 export type TrainFeedName = 'nswtrains' | 'sydneytrains';
 export const TRAIN_FEEDS: TrainFeedName[] = ['nswtrains', 'sydneytrains'];
@@ -130,6 +131,8 @@ export function bearingDeg(a: [number, number], b: [number, number]): number {
 }
 
 const round5 = (v: number) => Math.round(v * 1e5) / 1e5;
+/** ~0.1 m precision: enough for carriages on a track, without the km offsets drifting off it. */
+const roundPath = (p: [number, number][]) => p.map(([x, y]) => [Math.round(x * 1e6) / 1e6, Math.round(y * 1e6) / 1e6] as [number, number]);
 
 /**
  * The part of a polyline from `atKm - backKm` to `atKm + aheadKm` (clamped to the line), with the ends and the
@@ -187,7 +190,7 @@ function bracket(stopTimes: StopTimeRow[], nowSec: number, delaySec: number): { 
  * Realtime vehicles with a position but no matching running trip are
  * included too, as 'live'.
  */
-export function predictTrainPositions(feed: TrainsFeedData, at: Date, realtime: RealtimeEntry[]): TrainPosition[] {
+export function predictTrainPositions(feed: TrainsFeedData, at: Date, realtime: RealtimeEntry[], track?: TrackGraph | null): TrainPosition[] {
   const rtByTrip = new Map(realtime.map((r) => [r.tripId, r]));
   const out: TrainPosition[] = [];
 
@@ -232,12 +235,16 @@ export function predictTrainPositions(feed: TrainsFeedData, at: Date, realtime: 
       lat = pos.lat; lng = pos.lng;
     }
     const slice = atKm != null ? shapeSlice(coords, atKm, PATH_BACK_KM, PATH_AHEAD_KM) : null;
-    const bearing = rt?.bearing ?? slice?.bearing ?? null;
+    let bearing = rt?.bearing ?? slice?.bearing ?? null;
     const route = feed.routes.get(trip.routeId);
+    let path = slice?.path; let pathAtKm = slice?.atKm;
+    // Onto the real rails: the shape's direction there beats a realtime bearing (which can be stale or noisy).
+    const snap = track ? snapToTrack(track, [lng, lat], { bearing: slice?.bearing ?? rt?.bearing, shape: slice?.path, backKm: PATH_BACK_KM, aheadKm: PATH_AHEAD_KM }) : null;
+    if (snap) { path = roundPath(snap.path); pathAtKm = snap.atKm; lat = snap.lat; lng = snap.lng; bearing = snap.bearing; }
     out.push({
       tripId: trip.id, routeId: trip.routeId, route: route?.shortName ?? route?.longName ?? '', headsign: trip.headsign, lat, lng, status, delaySec,
       bearing, speedMps, carriages: rt?.carriages ?? null, network: trip.feed ?? rt?.feed ?? null,
-      ...(slice ? { path: slice.path, pathAtKm: slice.atKm } : {}),
+      ...(path && pathAtKm != null ? { path, pathAtKm } : {}),
     });
   }
 
@@ -248,10 +255,13 @@ export function predictTrainPositions(feed: TrainsFeedData, at: Date, realtime: 
     if (!Number.isFinite(rt.vehicleLat) || !Number.isFinite(rt.vehicleLng) || (rt.vehicleLat === 0 && rt.vehicleLng === 0)) continue;
     const trip = tripsById.get(rt.tripId);
     const route = trip ? feed.routes.get(trip.routeId) : undefined;
+    // No running trip (so no shape): only the realtime bearing tells the direction on the track.
+    const snap = track ? snapToTrack(track, [rt.vehicleLng, rt.vehicleLat], { bearing: rt.bearing, backKm: PATH_BACK_KM, aheadKm: PATH_AHEAD_KM }) : null;
     out.push({
       tripId: rt.tripId, routeId: trip?.routeId ?? '', route: route?.shortName || route?.longName || '', headsign: trip?.headsign ?? '',
-      lat: rt.vehicleLat, lng: rt.vehicleLng, status: 'live', delaySec: rt.delaySec,
-      bearing: rt.bearing ?? null, speedMps: rt.speedMps ?? null, carriages: rt.carriages ?? null, network: trip?.feed ?? rt.feed ?? null,
+      lat: snap?.lat ?? rt.vehicleLat, lng: snap?.lng ?? rt.vehicleLng, status: 'live', delaySec: rt.delaySec,
+      bearing: snap?.bearing ?? rt.bearing ?? null, speedMps: rt.speedMps ?? null, carriages: rt.carriages ?? null, network: trip?.feed ?? rt.feed ?? null,
+      ...(snap ? { path: roundPath(snap.path), pathAtKm: snap.atKm } : {}),
     });
   }
   return out;

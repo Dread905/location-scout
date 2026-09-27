@@ -5,8 +5,15 @@
  */
 import { deadReckon } from './planes.js';
 
-export interface Pose { lng: number; lat: number; bearing: number | null; /** km along the train's path, when it has one */ pathKm?: number }
-export type Predict = (elapsedMs: number) => Pose;
+export interface Pose {
+  lng: number; lat: number; bearing: number | null;
+  /** km along the train's path, when it has one */ pathKm?: number;
+  /** The path `pathKm` is measured along. */ path?: [number, number][];
+}
+export type Predict = ((elapsedMs: number) => Pose) & {
+  /** For a vehicle on a path: where a pose lies along it (km), or null when it's not on it; and the pose at a km. */
+  onPath?: { project: (p: Pose) => number | null; at: (km: number) => Pose };
+};
 
 /** How long a new poll takes to blend in from the drawn position. */
 export const BLEND_MS = 1500;
@@ -83,17 +90,36 @@ export function trainPredict(t: TrainLike): Predict {
   const end = cum.at(-1)!;
   const at0 = t.pathAtKm;
   const mps = t.speedMps ?? 0;
-  // A live position may sit a little off the shape: carry that offset along so t=0 is exactly the reported point.
-  const p0 = pointAlong(path, at0, cum);
-  const off = { lng: t.lng - p0.lng, lat: t.lat - p0.lat };
-  return (elapsedMs) => {
-    const km = Math.min(end, at0 + (mps * Math.min(MAX_TRAIN_EXTRAP_MS, Math.max(0, elapsedMs))) / 1e6);
-    const p = km === at0 ? p0 : pointAlong(path, km, cum);
-    return { lng: p.lng + off.lng, lat: p.lat + off.lat, bearing: mps > 0 ? p.bearing : (t.bearing ?? p.bearing), pathKm: km };
+  // The path is the track (snapped server-side): the train is always drawn on it, at its km, never off to the side.
+  const at = (km: number): Pose => {
+    const p = pointAlong(path, km, cum);
+    return { lng: p.lng, lat: p.lat, bearing: mps > 0 || t.bearing == null ? p.bearing : t.bearing, pathKm: km, path };
   };
+  const f: Predict = (elapsedMs) => at(Math.min(end, at0 + (mps * Math.min(MAX_TRAIN_EXTRAP_MS, Math.max(0, elapsedMs))) / 1e6));
+  f.onPath = {
+    at,
+    project: (p) => {
+      // The old pose's own path position, if it lies on this path (within a few metres); else null.
+      let best: { km: number; off: number } | null = null;
+      for (let i = 1; i < path.length; i++) {
+        const k = cosLat(path[i - 1][1]);
+        const [bx, by] = [(path[i][0] - path[i - 1][0]) * DEG_KM * k, (path[i][1] - path[i - 1][1]) * DEG_KM];
+        const [px, py] = [(p.lng - path[i - 1][0]) * DEG_KM * k, (p.lat - path[i - 1][1]) * DEG_KM];
+        const L2 = bx * bx + by * by;
+        const u = L2 ? Math.max(0, Math.min(1, (px * bx + py * by) / L2)) : 0;
+        const off = Math.hypot(px - u * bx, py - u * by);
+        if (!best || off < best.off) best = { km: cum[i - 1] + u * (cum[i] - cum[i - 1]), off };
+      }
+      return best && best.off <= ON_PATH_KM ? best.km : null;
+    },
+  };
+  return f;
 }
 
-interface Track { from: Pose | null; start: number; predict: Predict; key?: string }
+/** A drawn pose within this of a train's new path counts as on it, and blends along the track. */
+export const ON_PATH_KM = 0.008;
+
+interface Track { from: Pose | null; start: number; predict: Predict; key?: string; /** blend start as km along the new path */ fromKm?: number | null }
 
 /** Animated poses for a set of vehicles, keyed by id. `update` on each poll, `pose` every frame. */
 export class MotionTracker {
@@ -108,7 +134,9 @@ export class MotionTracker {
       const cur = this.pose(it.id, now);
       const target = it.predict(0);
       const from = cur && distKm([cur.lng, cur.lat], [target.lng, target.lat]) <= MAX_BLEND_KM ? cur : null;
-      next.set(it.id, { from, start: now, predict: it.predict, key: it.key });
+      const fromKm = from && it.predict.onPath ? it.predict.onPath.project(from) : null;
+      // A train on a track either glides along it or jumps; it never slides across to another line.
+      next.set(it.id, { from: it.predict.onPath && fromKm == null ? null : from, start: now, predict: it.predict, key: it.key, fromKm });
     }
     this.tracks = next;
   }
@@ -123,6 +151,8 @@ export class MotionTracker {
     const p = tr.predict(el);
     if (!tr.from || el >= BLEND_MS) return p;
     const k = smooth(el / BLEND_MS);
+    // On the same track: glide along it, not across the corridor in a straight line.
+    if (tr.fromKm != null && tr.predict.onPath && p.pathKm != null) return tr.predict.onPath.at(tr.fromKm + (p.pathKm - tr.fromKm) * k);
     return { ...p, lng: tr.from.lng + (p.lng - tr.from.lng) * k, lat: tr.from.lat + (p.lat - tr.from.lat) * k };
   }
 }

@@ -23,7 +23,7 @@ import {
   combinedFeedData, combinedRealtime, nextPasses, predictTrainPositions, tripCount, TRAIN_FEEDS,
 } from './feeds/trains.js';
 import { nearbyFor } from './feeds/eventScout.js';
-import { getCachedRail } from './sources/rail.js';
+import { getCachedRail, trackGraphFor } from './sources/rail.js';
 import { commonsNearbyCached } from './sources/commons.js';
 import { deleteImages, detectImageType, MAX_PHOTO_BYTES, parseMultipart, saveImage } from './photos.js';
 import { buildGpx } from './gpx.js';
@@ -681,7 +681,9 @@ app.get('/api/trains', async (req, res, next) => {
     // Realtime describes *now*; only mix it in when asked about (roughly) now.
     const nearNow = Math.abs(at.getTime() - Date.now()) < 5 * 60_000;
     const [feed, realtime] = [combinedFeedData(db), nearNow ? await combinedRealtime(key) : []];
-    res.json({ configured: true, positions: predictTrainPositions(feed, at, realtime) });
+    const unsnapped = predictTrainPositions(feed, at, realtime);
+    const track = trackGraphFor(db, unsnapped);
+    res.json({ configured: true, positions: predictTrainPositions(feed, at, realtime, track) });
   } catch (err) { next(err); }
 });
 

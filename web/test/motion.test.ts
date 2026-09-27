@@ -44,11 +44,36 @@ test('trainPredict: runs along the path at its speed, capped, and stops at the p
   assert.deepEqual([flat.lng, flat.lat, flat.bearing], [150, -33, 45]);
 });
 
-test('trainPredict: a live point off the shape keeps its offset as it moves', () => {
+test('trainPredict: a train with a path is drawn on it (no sideways offset carried along)', () => {
   const path: [number, number][] = [[150, -33], [150, -33.1]];
   const p = trainPredict({ lat: -33.01, lng: 150.001, speedMps: 10, path, pathAtKm: 1.1132 });
-  near(p(0).lng, 150.001, 1e-9);
-  near(p(20_000).lng, 150.001, 1e-9);
+  near(p(0).lng, 150, 1e-9);
+  near(p(20_000).lng, 150, 1e-9);
+  assert.equal(p(0).path, path);
+});
+
+test('MotionTracker: a train re-reported further along its track glides along the curve, not across it', () => {
+  // A quarter-ish bend: east ~90 m then south ~110 m. Old report at the start, new one round the corner.
+  const path: [number, number][] = [[151.19, -33.89], [151.191, -33.89], [151.191, -33.891]];
+  const cum = cumulative(path);
+  const mt = new MotionTracker();
+  mt.update([{ id: 't', predict: trainPredict({ lat: -33.89, lng: 151.19, speedMps: 0, path, pathAtKm: 0.01 }), key: 'a' }], 0);
+  mt.update([{ id: 't', predict: trainPredict({ lat: -33.8905, lng: 151.191, speedMps: 0, path, pathAtKm: cum[1] + 0.05 }), key: 'b' }], 1000);
+  for (let t = 1000; t <= 1000 + BLEND_MS; t += 100) {
+    const p = mt.pose('t', t)!;
+    // Every blended pose lies on the polyline: either on the east leg (lat -33.89) or the south leg (lng 151.191).
+    const onEast = Math.abs(p.lat - -33.89) < 1e-9; const onSouth = Math.abs(p.lng - 151.191) < 1e-9;
+    assert.ok(onEast || onSouth, `pose ${p.lng},${p.lat} is off the track`);
+  }
+});
+
+test('MotionTracker: a train whose new path doesn\'t pass the drawn pose (another track) jumps rather than sliding across', () => {
+  const mt = new MotionTracker();
+  const a: [number, number][] = [[151, -33], [151, -33.01]];
+  const b: [number, number][] = [[151.0001, -33], [151.0001, -33.01]]; // ~9 m east: the next track over
+  mt.update([{ id: 't', predict: trainPredict({ lat: -33.005, lng: 151, speedMps: 0, path: a, pathAtKm: 0.5566 }), key: 'a' }], 0);
+  mt.update([{ id: 't', predict: trainPredict({ lat: -33.005, lng: 151.0001, speedMps: 0, path: b, pathAtKm: 0.5566 }), key: 'b' }], 1000);
+  near(mt.pose('t', 1001)!.lng, 151.0001, 1e-9);
 });
 
 test('MotionTracker: blends from the drawn pose to a new report, snaps on big jumps, keeps unchanged reports', () => {

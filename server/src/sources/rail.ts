@@ -7,6 +7,7 @@
 import { Db } from '../db.js';
 import { Bbox, bboxFromRadius } from '../geo.js';
 import type { TaskLog } from '../tasks/registry.js';
+import { buildTrackGraph, nearestSegment, type TrackGraph } from '../feeds/trackSnap.js';
 
 export const OVERPASS_URL = process.env.OVERPASS_URL ?? 'https://overpass-api.de/api/interpreter';
 const FETCH_TIMEOUT_MS = 25_000;
@@ -137,3 +138,61 @@ export async function runRailTask(db: Db, areas: RailArea[], log: TaskLog): Prom
   log(`${lines} rail ways, ${sites} industrial/mine sites`);
   return { ok: true, message: `${lines} rail ways, ${sites} sites` };
 }
+
+// --- track graph for snapping trains ----------------------------------------------
+
+/** On-demand rail tiles (degrees square) fetched around trains the weekly network doesn't cover. */
+export const RAIL_TILE_DEG = 0.05;
+const TILE_TTL_MS = 7 * 86_400_000;
+const tileKey = (x: number, y: number) => `rail:tile:${x},${y}`;
+export const railTileOf = (lng: number, lat: number): [number, number] => [Math.floor(lng / RAIL_TILE_DEG), Math.floor(lat / RAIL_TILE_DEG)];
+
+let graphCache: { sig: string; graph: TrackGraph } | null = null;
+const tilesKnown = new Set<string>();
+const tilesInFlight = new Set<string>();
+
+function tileLines(db: Db): { raw: string[]; keys: string[] } {
+  const raw: string[] = []; const keys: string[] = [];
+  for (const k of tilesKnown) { const v = db.getKv(k); if (v) { raw.push(v); keys.push(k); } }
+  return { raw, keys };
+}
+
+/**
+ * The track graph for snapping trains: the cached weekly network plus any on-demand tiles. Trains with no track
+ * nearby (outside the configured areas) get their tile fetched in the background, so the next poll can snap them —
+ * independent of whether the Rail overlay is shown. `fetchTile` is injectable for tests.
+ */
+export function trackGraphFor(
+  db: Db, trains: { lat: number; lng: number }[],
+  fetchTile: (b: Bbox) => Promise<{ coords: [number, number][] }[]> = async (b) =>
+    railLinesFromGeoJson({ type: 'FeatureCollection', features: mapRailElements((await overpassFetch(railQuery([b]))).elements) }),
+): TrackGraph {
+  const base = db.getKv(RAIL_KV_KEY) ?? '';
+  const tiles = tileLines(db);
+  const sig = `${base.length}:${base.slice(0, 64)}|${tiles.keys.join(';')}`;
+  if (!graphCache || graphCache.sig !== sig) {
+    const lines = [
+      ...railLinesFromGeoJson(getCachedRail(db)),
+      ...tiles.raw.flatMap((r) => JSON.parse(r) as { coords: [number, number][] }[]),
+    ];
+    graphCache = { sig, graph: buildTrackGraph(lines) };
+  }
+  const graph = graphCache.graph;
+  for (const t of trains) {
+    if (!Number.isFinite(t.lat) || !Number.isFinite(t.lng) || nearestSegment(graph, [t.lng, t.lat], 0.2)) continue;
+    const [x, y] = railTileOf(t.lng, t.lat);
+    const k = tileKey(x, y);
+    if (tilesInFlight.has(k) || (tilesKnown.has(k) && db.getKv(k) != null)) continue;
+    if (db.getKv(k) != null) { tilesKnown.add(k); continue; } // fetched by an earlier run of the server
+    tilesInFlight.add(k);
+    const b: Bbox = { west: x * RAIL_TILE_DEG, south: y * RAIL_TILE_DEG, east: (x + 1) * RAIL_TILE_DEG, north: (y + 1) * RAIL_TILE_DEG };
+    fetchTile(b)
+      .then((lines) => { db.setKv(k, JSON.stringify(lines.map((l) => ({ coords: l.coords }))), new Date(Date.now() + TILE_TTL_MS).toISOString()); tilesKnown.add(k); })
+      .catch(() => { /* try again on a later poll */ })
+      .finally(() => tilesInFlight.delete(k));
+  }
+  return graph;
+}
+
+/** Forget the in-memory graph and known tiles (tests). */
+export function resetTrackGraphCache() { graphCache = null; tilesKnown.clear(); tilesInFlight.clear(); }

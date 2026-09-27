@@ -29,7 +29,7 @@ export interface Carriage { front: [number, number]; rear: [number, number]; bea
 /**
  * `n` carriages behind a lead point, each a chord between two points on the track so they bend round curves.
  * `path` is [lng, lat] in the direction of travel with the lead at `headKm`; without a path they trail straight
- * back from `head` along `bearing`. `scale` stretches lengths (used to keep them visible when zoomed out).
+ * back from `head` along `bearing`. With a path, `head` is ignored: the nose is the path point at `headKm`. `scale` stretches lengths (used to keep them visible when zoomed out).
  */
 export function placeCarriages(
   opts: { path?: [number, number][] | null; headKm?: number; head: [number, number]; bearing: number | null },
@@ -39,13 +39,10 @@ export function placeCarriages(
   const gap = (CAR_GAP_M * scale) / 1000;
   const path = opts.path && opts.path.length >= 2 && opts.headKm != null ? opts.path : null;
   const cum = path ? cumulative(path) : null;
-  // Offset the whole chain so its nose is exactly at the drawn head (the drawn head may be slightly off the shape).
+  // Every bogie point sits on the path itself (the server snaps paths to the rails), so each carriage is its own
+  // chord of the track rather than a rigid chain translated to the drawn head.
   const at = (km: number): [number, number] => {
-    if (path) {
-      const p = pointAlong(path, km, cum!);
-      const h = pointAlong(path, opts.headKm!, cum!);
-      return [p.lng + opts.head[0] - h.lng, p.lat + opts.head[1] - h.lat];
-    }
+    if (path) { const p = pointAlong(path, km, cum!); return [p.lng, p.lat]; }
     return offset(opts.head, ((opts.bearing ?? 0) + 180) % 360, -km);
   };
   const out: Carriage[] = [];

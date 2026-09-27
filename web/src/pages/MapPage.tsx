@@ -207,7 +207,7 @@ export default function MapPage({ user }: { user: User | null }) {
         updateTrains(map, moved.map(({ t, pose }) => (pose ? { ...t, lat: pose.lat, lng: pose.lng } : t)));
         setTrains3d(moved.map(({ t, pose }) => ({
           lng: pose?.lng ?? t.lng, lat: pose?.lat ?? t.lat, bearing: pose?.bearing ?? t.bearing ?? null, live: t.status === 'live',
-          carriages: carriageCount(t), path: byId.get(t.tripId)?.path, pathKm: pose?.pathKm ?? t.pathAtKm,
+          carriages: carriageCount(t), ...(pose?.path ? { path: pose.path, pathKm: pose.pathKm } : { path: byId.get(t.tripId)?.path, pathKm: t.pathAtKm }),
         })));
       }
       const f = followRef.current;
