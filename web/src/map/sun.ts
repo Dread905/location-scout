@@ -1,5 +1,5 @@
 /**
- * Sun and moon maths for the map, the spot panel and the trip planner.
+ * Sun and moon maths for the map, the spot panel and the Plan shoot page.
  * Pure (suncalc only): no MapLibre, no DOM, so node:test can run it.
  *
  * Light phases, by the sun's true (geometric) altitude h, and whether it is

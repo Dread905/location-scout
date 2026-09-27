@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  emptyFeedData, isServiceActiveOn, nextPasses, parseGtfsTime, predictTrainPositions, TrainsFeedData,
+  bearingDeg, cumulativeKm, emptyFeedData, isServiceActiveOn, nextPasses, parseGtfsTime, PATH_BACK_KM, predictTrainPositions, shapeSlice, TrainsFeedData, vehicleExtras,
 } from '../src/feeds/trains.js';
 
 test('parseGtfsTime: handles times past midnight (>24:00:00)', () => {
@@ -94,4 +94,45 @@ test('predictTrainPositions: a realtime vehicle with no running scheduled trip i
   assert.equal(t1.headsign, 'Bathurst');
   assert.equal(t1.delaySec, 120);
   assert.equal(out.find((p) => p.tripId === 'UNKNOWN')!.status, 'live');
+});
+
+test('predictTrainPositions: scheduled trains carry bearing, speed, network and a shape slice around them', () => {
+  const feed = fixture();
+  feed.trips[0].feed = 'nswtrains';
+  const [pos] = predictTrainPositions(feed, new Date('2026-01-05T09:05:00'), []);
+  assert.ok(Math.abs(pos.bearing! - 180) < 0.5, `heading south, got ${pos.bearing}`);
+  assert.ok(Math.abs(pos.speedMps! - 11_132 / 600) < 0.5, `~18.5 m/s scheduled, got ${pos.speedMps}`);
+  assert.equal(pos.network, 'nswtrains');
+  assert.equal(pos.carriages, null);
+  assert.ok(pos.path && pos.path.length >= 2);
+  assert.ok(Math.abs(pos.pathAtKm! - PATH_BACK_KM) < 0.01, 'train sits PATH_BACK_KM into its slice');
+});
+
+test('predictTrainPositions: realtime bearing, speed and carriages win', () => {
+  const [pos] = predictTrainPositions(fixture(), new Date('2026-01-05T09:05:00'), [
+    { tripId: 'T1', delaySec: 0, vehicleLat: -33.02, vehicleLng: 150.0, bearing: 179, speedMps: 22, carriages: 8 },
+  ]);
+  assert.equal(pos.bearing, 179);
+  assert.equal(pos.speedMps, 22);
+  assert.equal(pos.carriages, 8);
+  assert.ok(pos.path, 'on the shape, so it gets a path');
+});
+
+test('shapeSlice: clamps to the line, re-bases atKm and interpolates the ends', () => {
+  const line: [number, number][] = [[150, -33], [150, -33.1]]; // ~11.13 km due south
+  const s = shapeSlice(line, 5, 1, 2)!;
+  assert.ok(Math.abs(s.atKm - 1) < 1e-9);
+  const cum = cumulativeKm(s.path);
+  assert.ok(Math.abs(cum.at(-1)! - 3) < 0.01, `slice ~3km, got ${cum.at(-1)}`);
+  assert.ok(Math.abs(s.bearing! - 180) < 1e-6);
+  const start = shapeSlice(line, 0.2, 1, 1)!;
+  assert.ok(Math.abs(start.atKm - 0.2) < 1e-9, 'clamped at the start');
+  assert.equal(Math.round(bearingDeg([150, -33], [150.01, -33])), 90);
+});
+
+test('vehicleExtras: bearing/speed/carriages, with protobuf zero defaults treated as absent', () => {
+  assert.deepEqual(vehicleExtras({ position: { bearing: 90, speed: 12 }, multiCarriageDetails: [{}, {}, {}, {}] }), { bearing: 90, speedMps: 12, carriages: 4 });
+  assert.deepEqual(vehicleExtras({ position: { bearing: 0, speed: 0 } }), {});
+  assert.deepEqual(vehicleExtras({ position: { bearing: -90 } }), { bearing: 270 });
+  assert.deepEqual(vehicleExtras(null), {});
 });

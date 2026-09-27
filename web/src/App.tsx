@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Routes, Route, Link, useNavigate, useLocation } from 'react-router-dom';
+import { Routes, Route, Link, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { api, AuthStatus } from './api.js';
 import { TimeProvider } from './time.js';
 import FirstRun from './pages/FirstRun.js';
@@ -7,11 +7,11 @@ import Login from './pages/Login.js';
 import Signup from './pages/Signup.js';
 import MapPage from './pages/MapPage.js';
 import PlacePage from './pages/PlacePage.js';
-import Trip from './pages/Trip.js';
+import PlanShoot from './pages/PlanShoot.js';
 import ImportExport from './pages/ImportExport.js';
 import Settings from './pages/Settings.js';
 
-const NAV = [['/', 'Map'], ['/trip', 'Trip'], ['/import', 'Import / export'], ['/settings', 'Settings']] as const;
+const NAV = [['/', 'Map'], ['/plan', 'Plan shoot'], ['/import', 'Import / export'], ['/settings', 'Settings']] as const;
 
 export default function App() {
   const [status, setStatus] = useState<AuthStatus | null>(null);
@@ -71,7 +71,8 @@ export default function App() {
       {menuOpen && <div className="topbar__scrim" onClick={() => setMenuOpen(false)} />}
       <Routes>
         <Route path="/places/:id" element={<PlacePage />} />
-        <Route path="/trip" element={<Trip />} />
+        <Route path="/plan" element={<PlanShoot />} />
+        <Route path="/trip" element={<Navigate to={`/plan${location.search}`} replace />} />
         <Route path="/import" element={<ImportExport />} />
         <Route path="/settings" element={<Settings user={user} />} />
         <Route path="*" element={<MapPage user={user} />} />

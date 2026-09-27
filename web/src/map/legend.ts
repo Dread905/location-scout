@@ -50,6 +50,8 @@ export const CATEGORIES: Category[] = [
   { key: 'pois', label: 'Points of interest', group: 'Base map', swatch: 'dot', color: '#666', paintProp: 'text-color', defaultOn: true,
     match: (l) => sl(l) === 'poi' },
 
+  { key: 'spots', label: 'Spots & photo thumbnails', group: 'Overlays', swatch: 'dot', color: '#4cc3ff', defaultOn: true,
+    match: ids('spot-points', 'spot-label', 'spot-thumbs', 'place-spots', 'place-spots-label', 'place-spot-thumbs', 'clusters', 'cluster-count') },
   { key: 'imagery', label: 'Satellite imagery', group: 'Overlays', swatch: 'fill', color: '#3b5a3a', defaultOn: false, match: ids('imagery') },
   { key: 'terrain', label: 'Terrain shading', group: 'Overlays', swatch: 'fill', color: '#5a5f6e', defaultOn: true, match: ids('hillshade', 'terrain-shadow') },
   { key: 'shadows', label: 'Building shadows', group: 'Overlays', swatch: 'fill', color: '#0a0c1a', paintProp: 'fill-color', defaultOn: true, match: ids('shadows') },
@@ -58,6 +60,7 @@ export const CATEGORIES: Category[] = [
   { key: 'rail', label: 'Rail network', group: 'Overlays', swatch: 'line', color: '#4cc3ff', defaultOn: false, match: ids('rail-lines', 'rail-industrial') },
   { key: 'trains', label: 'Trains', group: 'Overlays', swatch: 'ring', color: '#22c55e', defaultOn: false, match: ids('trains') },
   { key: 'planes', label: 'Planes', group: 'Overlays', swatch: 'dashed', color: '#dfe7ff', defaultOn: false, match: ids('planes', 'planes-proj', 'planes-ghost', 'planes-shadow', 'planes-label', 'planes-3d') },
+  { key: 'weather', label: 'Weather radar & readout', group: 'Overlays', swatch: 'fill', color: '#3aa0ff', defaultOn: false, match: ids('radar') },
   { key: 'candidates', label: 'OSM candidates', group: 'Overlays', swatch: 'dot', color: '#6b7280', defaultOn: false, match: ids('candidates') },
 ];
 

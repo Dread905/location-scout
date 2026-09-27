@@ -346,7 +346,7 @@ input[type='checkbox'], input[type='radio'] { width: auto; accent-color: var(--a
 .lightbox__nav--prev { left: 14px; }
 .lightbox__nav--next { right: 14px; }
 
-/* ── Place page, trip planner, tables ── */
+/* ── Place page, Plan shoot page, tables ── */
 .placehead { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
 .spotgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; margin-top: 14px; }
 .spotcard { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; display: flex; flex-direction: column; gap: 6px; }
@@ -440,4 +440,118 @@ input[type='checkbox'], input[type='radio'] { width: auto; accent-color: var(--a
   .nearby { bottom: 118px; }
   .nearby--open { left: 10px; }
   .nearby__panel { width: 100%; max-height: 40dvh; }
+}
+.shootday { margin: 12px 0 20px; }
+.shootday .daystrip__row { margin-top: 3px; }
+.shootday__windows li { margin: 2px 0; }
+
+/* Follow mode: per-row Follow button in the Nearby list, and the pill on the map */
+.nearby__section li { display: flex; align-items: center; gap: 4px; }
+.nearby__follow { flex: none; font-size: 11px; padding: 2px 8px; border-radius: var(--pill); background: none; border: 1px solid var(--border);
+  color: var(--muted); cursor: pointer; }
+.nearby__follow:hover, .nearby__follow.active { color: var(--accent); border-color: var(--accent); }
+.followpill { position: absolute; top: 96px; left: 50%; transform: translateX(-50%); z-index: 6; display: flex; align-items: center; gap: 8px;
+  background: var(--panel); border: 1px solid var(--accent); color: var(--text); border-radius: var(--pill); padding: 4px 6px 4px 14px; font-size: 13px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35); max-width: calc(100vw - 32px); }
+.followpill strong { color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.followpill label { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; cursor: pointer; }
+.followpill button { background: none; border: none; color: var(--text); font-size: 14px; cursor: pointer; padding: 2px 8px; border-radius: var(--pill); }
+.followpill button:hover { background: var(--panel-hover); }
+.popup-follow { margin-top: 6px; font-size: 12px; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--accent); background: none; color: var(--accent); cursor: pointer; }
+.nearby__section li .nearby__row { flex: 1; min-width: 0; width: auto; }
+
+/* Settings tabs */
+fieldset.bare { border: 0; padding: 0; margin: 0; }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: 0 0 16px; overflow-x: auto; scrollbar-width: none; }
+.tab { background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 8px 12px; color: var(--muted); white-space: nowrap; cursor: pointer; }
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* Spot glance: the hover card over a spot's thumbnail or dot */
+.glance { pointer-events: none; }
+.glance .maplibregl-popup-content { padding: 0; overflow: hidden; background: var(--glass); color: var(--text); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); box-shadow: 0 8px 22px rgba(0, 0, 0, 0.4); font-size: 12px; width: 240px; }
+.glance.maplibregl-popup-anchor-bottom .maplibregl-popup-tip { border-top-color: var(--border); }
+.glance__img { display: block; width: 100%; height: 120px; object-fit: cover; background: var(--panel-2); }
+.glance__body { padding: 8px 10px 10px; display: grid; gap: 4px; }
+.glance__name { font-weight: 600; font-size: 13px; }
+.glance__good { color: var(--muted); }
+.glance__good.is-now { color: var(--accent); font-weight: 600; }
+.glance__meta { color: var(--muted); }
+.glance__tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.glance__tags span { background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--pill); padding: 0 7px; font-size: 11px; }
+.glance__notes { color: var(--text); opacity: 0.85; line-height: 1.35; }
+
+/* All map popups: dark glass so light text stays readable */
+.maplibregl-popup-content { background: var(--panel, #171a21); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm, 8px); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45); font-size: 13px; }
+.maplibregl-popup-content b, .maplibregl-popup-content strong { color: var(--text); }
+.maplibregl-popup-close-button { color: var(--muted); font-size: 16px; padding: 0 6px; }
+.maplibregl-popup-close-button:hover { color: var(--text); background: none; }
+.maplibregl-popup-anchor-bottom .maplibregl-popup-tip { border-top-color: var(--border); }
+.maplibregl-popup-anchor-top .maplibregl-popup-tip { border-bottom-color: var(--border); }
+.maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: var(--border); }
+.maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: var(--border); }
+
+/* Weather readout for the map centre, just above the time bar. */
+.wxpill { position: absolute; bottom: 104px; left: 50%; transform: translateX(-50%); z-index: 6; display: flex; align-items: center; gap: 10px;
+  max-width: calc(100% - 20px); white-space: nowrap; overflow: hidden; background: var(--glass); border: 1px solid var(--border);
+  border-radius: var(--pill); padding: 4px 14px; font-size: 13px; font-variant-numeric: tabular-nums; backdrop-filter: blur(6px); }
+.wxpill__icon { font-size: 16px; }
+.wxpill strong { font-size: 15px; }
+.wxpill__muted { color: var(--muted); font-size: 12px; }
+.wxpill__warn { color: var(--on-accent); background: var(--accent); border-radius: var(--pill); padding: 0 8px; font-size: 11.5px; font-weight: 600; }
+@media (max-width: 820px) { .wxpill { bottom: 128px; gap: 7px; font-size: 12px; padding: 3px 10px; } }
+
+/* Plan shoot */
+.plan__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.plan__head h1 { margin: 0; }
+.plan__actions { display: flex; gap: 8px; }
+.plan__controls { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; margin: 14px 0 12px; align-items: end; }
+.plan__field { display: grid; gap: 4px; font-size: 12.5px; color: var(--muted); }
+.plan__field select, .plan__field input { width: 100%; min-width: 0; }
+.plan__criteria { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px 12px; margin: 0 0 14px; background: var(--panel); }
+.plan__criteria legend { padding: 0 6px; color: var(--muted); font-size: 12.5px; }
+.chip--check { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+.chip--check input { margin: 0; accent-color: var(--accent); }
+.chip--check.is-disabled { opacity: 0.45; cursor: not-allowed; }
+.plan__days { margin-bottom: 10px; }
+.plan__tablewrap { overflow-x: auto; }
+.plan section h3 { margin: 18px 0 6px; font-size: 14px; }
+.plan__wxday { margin-bottom: 12px; }
+.plan__wxday .linklike { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.recs { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+.rec { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); padding: 10px 12px; }
+.rec.active { border-color: var(--accent); }
+.rec p { margin: 4px 0 0; }
+.rec__main { display: flex; align-items: center; gap: 10px; width: 100%; background: none; border: 0; padding: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.rec__rank { flex: none; width: 26px; height: 26px; border-radius: var(--pill); background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; font-weight: 700; font-size: 13px; }
+.rec__when { flex: 1; min-width: 0; }
+.rec__score { color: var(--accent); font-weight: 600; font-size: 13px; }
+.rec__why { color: var(--text); font-size: 13.5px; }
+.rec__miss { font-size: 12px; }
+.wxstrip { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 1px; }
+.wxstrip__cell { position: relative; display: grid; grid-template-rows: 14px 18px 14px 12px; font-size: 9.5px; color: var(--muted); text-align: center; }
+.wxstrip__cloud { background: #c9d2e3; border-radius: 2px; }
+.wxstrip__rain { position: relative; background: var(--input-bg); }
+.wxstrip__rain div { position: absolute; left: 0; right: 0; bottom: 0; background: var(--blue); }
+.wxstrip__h { font-size: 9px; }
+.print-only { display: none; }
+@media (max-width: 520px) {
+  .plan__controls { grid-template-columns: 1fr 1fr; }
+  .plan__field--spot { grid-column: 1 / -1; }
+  .wxstrip__wind { font-size: 8px; }
+}
+@media print {
+  :root { --bg: #fff; --text: #111; --muted: #555; }
+  body { background: #fff; color: #111; }
+  .topbar, .no-print, nav, .timebar { display: none !important; }
+  .print-only { display: block !important; }
+  .page { padding: 0; max-width: none; }
+  .plan__print { font-size: 12pt; }
+  .plan__print h1 { font-size: 20pt; margin: 0 0 8px; }
+  .plan__print h2 { font-size: 13pt; margin: 14px 0 4px; border-bottom: 1px solid #ccc; }
+  .plan__print p, .plan__print li { margin: 2px 0; }
+  .plan__printhead { display: flex; gap: 14px; align-items: flex-start; }
+  .plan__printhead img { border: 1px solid #ccc; }
+  @page { margin: 14mm; }
 }

@@ -18,13 +18,15 @@ import { geocode } from './geocode.js';
 import { bboxFromRadius, haversine, parseBbox, parseLatLng } from './geo.js';
 import { parseGoodTimes, GoodTimesError, DEFAULT_GOOD_TIMES } from './goodTimes.js';
 import { fetchPlanes } from './feeds/planes.js';
+import { fetchWeather } from './feeds/weather.js';
+import { fetchBuildings } from './sources/osm.js';
 import {
   combinedFeedData, combinedRealtime, nextPasses, predictTrainPositions, tripCount, TRAIN_FEEDS,
 } from './feeds/trains.js';
 import { nearbyFor } from './feeds/eventScout.js';
-import { getCachedRail } from './sources/rail.js';
+import { getCachedRail, requestTilesForUnsnapped, trackGraphFor } from './sources/rail.js';
 import { commonsNearbyCached } from './sources/commons.js';
-import { deleteImages, detectImageType, MAX_PHOTO_BYTES, parseMultipart, saveImage } from './photos.js';
+import { coverFields, deleteImages, detectImageType, MAX_PHOTO_BYTES, parseMultipart, saveImage, SPOT_COVER_COLS } from './photos.js';
 import { buildGpx } from './gpx.js';
 import { buildFeatureCollection, importFeatureCollection, ShareBundle, syncRemote } from './share.js';
 import { assertPublicUrl, guardedFetch } from './ssrf.js';
@@ -248,12 +250,14 @@ interface SpotRow {
   id: string; place_id: string | null; owner_id: string; name: string; notes: string; lat: number; lng: number;
   tags: string; facing_deg: number | null; fov_deg: number | null; good_times: string;
   visibility: Visibility; source: string; source_ref: string; created_at: string; updated_at: string;
+  photo_count?: number; cover_id?: string | null;
 }
 function spotJson(r: SpotRow) {
   return {
     id: r.id, placeId: r.place_id, ownerId: r.owner_id, name: r.name, notes: r.notes, lat: r.lat, lng: r.lng,
     tags: JSON.parse(r.tags), facingDeg: r.facing_deg, fovDeg: r.fov_deg, goodTimes: JSON.parse(r.good_times),
     visibility: r.visibility, source: r.source, sourceRef: r.source_ref, createdAt: r.created_at, updatedAt: r.updated_at,
+    ...coverFields(r),
   };
 }
 
@@ -344,7 +348,7 @@ app.get('/api/spots', (req, res) => {
       args.push(bbox.south, bbox.north, bbox.west, bbox.east);
     }
 
-    let rows = db.handle.prepare(`SELECT * FROM spots WHERE ${clauses.join(' AND ')} ORDER BY name`).all(...args) as unknown as SpotRow[];
+    let rows = db.handle.prepare(`SELECT spots.*, ${SPOT_COVER_COLS} FROM spots WHERE ${clauses.join(' AND ')} ORDER BY name`).all(...args) as unknown as SpotRow[];
 
     // near= is a circle; the bbox above is only its bounding box.
     if (typeof req.query.near === 'string') {
@@ -381,11 +385,11 @@ app.post('/api/spots', (req, res) => {
     .run(id, b.placeId ? String(b.placeId) : null, req.user!.id, b.name.trim(), String(b.notes ?? ''), b.lat, b.lng,
       JSON.stringify(Array.isArray(b.tags) ? b.tags : []), typeof b.facingDeg === 'number' ? b.facingDeg : null,
       typeof b.fovDeg === 'number' ? b.fovDeg : null, JSON.stringify(goodTimes), visibility, now, now);
-  res.status(201).json(spotJson(db.handle.prepare('SELECT * FROM spots WHERE id = ?').get(id) as unknown as SpotRow));
+  res.status(201).json(spotJson(db.handle.prepare(`SELECT spots.*, ${SPOT_COVER_COLS} FROM spots WHERE id = ?`).get(id) as unknown as SpotRow));
 });
 
 app.get('/api/spots/:id', (req, res) => {
-  const row = db.handle.prepare('SELECT * FROM spots WHERE id = ?').get(req.params.id) as unknown as SpotRow | undefined;
+  const row = db.handle.prepare(`SELECT spots.*, ${SPOT_COVER_COLS} FROM spots WHERE id = ?`).get(req.params.id) as unknown as SpotRow | undefined;
   if (!row || !canRead(row.visibility, row.owner_id, req.user)) return res.status(404).json({ error: 'Not found' });
   res.json(spotJson(row));
 });
@@ -419,7 +423,7 @@ app.patch('/api/spots/:id', (req, res) => {
     .prepare('UPDATE spots SET place_id=?, name=?, notes=?, lat=?, lng=?, tags=?, facing_deg=?, fov_deg=?, good_times=?, visibility=?, updated_at=? WHERE id=?')
     .run(next.place_id, next.name, next.notes, next.lat, next.lng, next.tags, next.facing_deg, next.fov_deg,
       JSON.stringify(goodTimes), next.visibility, new Date().toISOString(), row.id);
-  res.json(spotJson(db.handle.prepare('SELECT * FROM spots WHERE id = ?').get(row.id) as unknown as SpotRow));
+  res.json(spotJson(db.handle.prepare(`SELECT spots.*, ${SPOT_COVER_COLS} FROM spots WHERE id = ?`).get(row.id) as unknown as SpotRow));
 });
 
 app.delete('/api/spots/:id', (req, res) => {
@@ -649,6 +653,41 @@ app.get('/api/planes', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// --- weather ------------------------------------------------------------------
+
+app.get('/api/weather', async (req, res, next) => {
+  try {
+    const lat = Number(req.query.lat);
+    const lng = Number(req.query.lng);
+    const days = Number(req.query.days ?? 7);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return res.status(400).json({ error: 'lat and lng are required' });
+    const baseUrl = process.env.OPEN_METEO_URL ?? 'https://api.open-meteo.com';
+    res.json(await fetchWeather(baseUrl, lat, lng, Number.isFinite(days) ? days : 7));
+  } catch (err) { next(err); }
+});
+
+// Building footprints around a point, for Plan shoot's building shadows (the page has no map to read vector tiles from).
+app.get('/api/buildings', async (req, res, next) => {
+  try {
+    const lat = Number(req.query.lat);
+    const lng = Number(req.query.lng);
+    const r = Number(req.query.r ?? 250);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return res.status(400).json({ error: 'lat and lng are required' });
+    const radius = Number.isFinite(r) ? r : 250;
+    // Footprints barely change: cache per ~10 m cell for a week so Overpass outages don't blank building shade.
+    const key = `buildings:${lat.toFixed(4)},${lng.toFixed(4)}:${Math.round(radius)}`;
+    const cached = db.getKv(key);
+    if (cached) return res.type('application/json').send(cached);
+    try {
+      const fc = await fetchBuildings(lat, lng, radius);
+      db.setKv(key, JSON.stringify(fc), new Date(Date.now() + 7 * 86_400_000).toISOString());
+      res.json(fc);
+    } catch (err) {
+      res.status(503).json({ error: (err as Error).message });
+    }
+  } catch (err) { next(err); }
+});
+
 // --- rail network --------------------------------------------
 
 app.get('/api/rail', (_req, res) => res.json(getCachedRail(db)));
@@ -669,7 +708,11 @@ app.get('/api/trains', async (req, res, next) => {
     // Realtime describes *now*; only mix it in when asked about (roughly) now.
     const nearNow = Math.abs(at.getTime() - Date.now()) < 5 * 60_000;
     const [feed, realtime] = [combinedFeedData(db), nearNow ? await combinedRealtime(key) : []];
-    res.json({ configured: true, positions: predictTrainPositions(feed, at, realtime) });
+    const unsnapped = predictTrainPositions(feed, at, realtime);
+    const track = trackGraphFor(db, unsnapped);
+    const positions = predictTrainPositions(feed, at, realtime, track);
+    requestTilesForUnsnapped(db, positions);
+    res.json({ configured: true, positions });
   } catch (err) { next(err); }
 });
 
@@ -738,7 +781,7 @@ app.post('/api/candidates/:id/promote', (req, res) => {
        VALUES (?, NULL, ?, ?, '', ?, ?, '[]', NULL, NULL, ?, 'private', 'osm', ?, ?, ?)`
     )
     .run(id, req.user!.id, row.name || 'Candidate', row.lat, row.lng, JSON.stringify(DEFAULT_GOOD_TIMES), row.ref, now, now);
-  res.status(201).json(spotJson(db.handle.prepare('SELECT * FROM spots WHERE id = ?').get(id) as unknown as SpotRow));
+  res.status(201).json(spotJson(db.handle.prepare(`SELECT spots.*, ${SPOT_COVER_COLS} FROM spots WHERE id = ?`).get(id) as unknown as SpotRow));
 });
 
 app.get('/api/eventscout/test', async (req, res) => {

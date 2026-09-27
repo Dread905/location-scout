@@ -6,7 +6,7 @@
 import crypto from 'node:crypto';
 import { Db } from '../db.js';
 import { Bbox, bboxFromRadius } from '../geo.js';
-import { OVERPASS_URL } from './rail.js';
+import { overpassQuery } from './overpass.js';
 import type { TaskLog } from '../tasks/registry.js';
 import type { RailArea } from './rail.js';
 
@@ -47,20 +47,7 @@ function candidatesQuery(bboxes: Bbox[]): string {
 }
 
 async function overpassFetch(query: string): Promise<{ elements: OverpassCandidateElement[] }> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch(OVERPASS_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `data=${encodeURIComponent(query)}`,
-      signal: controller.signal,
-    });
-    if (!res.ok) throw new Error(`Overpass returned ${res.status}`);
-    return (await res.json()) as { elements: OverpassCandidateElement[] };
-  } finally {
-    clearTimeout(timer);
-  }
+  return overpassQuery(query, { timeoutMs: FETCH_TIMEOUT_MS });
 }
 
 export interface CandidateRow { ref: string; name: string; lat: number; lng: number; tags: Record<string, string> }
@@ -100,4 +87,36 @@ export async function runCandidatesTask(db: Db, areas: RailArea[], log: TaskLog)
   }
   log(`${rows.length} candidates upserted`);
   return { ok: true, message: `${rows.length} candidates` };
+}
+
+// --- building footprints (Plan shoot's building shadows) ------------------------------
+
+interface OverpassBuildingWay { type: 'way'; id: number; geometry?: { lat: number; lon: number }[]; tags?: Record<string, string> }
+export const BUILDING_LEVEL_M = 3;
+export interface BuildingFeature { type: 'Feature'; id: number; properties: { height?: number }; geometry: { type: 'Polygon'; coordinates: number[][][] } }
+export interface BuildingCollection { type: 'FeatureCollection'; features: BuildingFeature[] }
+
+/** Overpass `out geom` building ways to GeoJSON footprints with a numeric `height` (tag, else levels × 3 m, else none). */
+export function buildingsFromOverpass(elements: OverpassBuildingWay[]): BuildingCollection {
+  const features: BuildingFeature[] = [];
+  for (const el of elements) {
+    if (el.type !== 'way' || !el.geometry || el.geometry.length < 4) continue;
+    const ring = el.geometry.map((p) => [p.lon, p.lat]);
+    const [a, b] = [ring[0], ring[ring.length - 1]];
+    if (a[0] !== b[0] || a[1] !== b[1]) ring.push(a);
+    const t = el.tags ?? {};
+    const h = parseFloat(t.height ?? '');
+    const levels = parseFloat(t['building:levels'] ?? '');
+    const height = Number.isFinite(h) ? h : Number.isFinite(levels) ? levels * BUILDING_LEVEL_M : undefined;
+    features.push({ type: 'Feature', id: el.id, properties: height != null ? { height } : {}, geometry: { type: 'Polygon', coordinates: [ring] } });
+  }
+  return { type: 'FeatureCollection', features };
+}
+
+/** Building footprints within `radiusM` of a point, from Overpass. */
+export async function fetchBuildings(lat: number, lng: number, radiusM: number): Promise<BuildingCollection> {
+  const r = Math.round(Math.min(1000, Math.max(50, radiusM)));
+  const q = `[out:json][timeout:20];way["building"](around:${r},${lat},${lng});out geom tags;`;
+  const data = await overpassFetch(q) as unknown as { elements: OverpassBuildingWay[] };
+  return buildingsFromOverpass(data.elements);
 }

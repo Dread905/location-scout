@@ -64,6 +64,9 @@ export interface Spot {
   sourceRef: string;
   createdAt: string;
   updatedAt: string;
+  /** From the server's spot payload: how many photos, and the cover photo's thumbnail (null when none). */
+  photoCount?: number;
+  coverThumbUrl?: string | null;
 }
 
 export interface Photo {
@@ -120,7 +123,13 @@ export interface Plane { hex: string; flight: string; lat: number; lon: number; 
 
 export interface RailFeature extends GeoJSON.Feature { properties: { id: string; kind: 'rail' | 'industrial' | 'mine' | 'works'; usage?: string; service?: string; name?: string } }
 
-export interface TrainPosition { tripId: string; routeId: string; route: string; headsign: string; lat: number; lng: number; status: 'live' | 'scheduled'; delaySec: number }
+export interface TrainPosition {
+  tripId: string; routeId: string; route: string; headsign: string; lat: number; lng: number; status: 'live' | 'scheduled'; delaySec: number;
+  bearing?: number | null; speedMps?: number | null; carriages?: number | null; network?: 'sydneytrains' | 'nswtrains' | null;
+  path?: [number, number][]; pathAtKm?: number;
+  /** Server snapped it onto OSM track; when false/absent the client snaps to the basemap's rail lines instead. */
+  snapped?: boolean;
+}
 export interface TrainPass { tripId: string; routeId: string; route: string; headsign: string; at: string }
 export interface TrainsStatus { configured: boolean; lastImport: string | null; tripCount: number }
 
@@ -169,6 +178,23 @@ async function json<T>(res: Response): Promise<T> {
 }
 
 const jsonHeaders = { 'Content-Type': 'application/json' };
+
+export interface WeatherHour {
+  time: string; // ISO (UTC)
+  tempC: number | null;
+  cloudPct: number | null;
+  cloudLowPct: number | null;
+  cloudMidPct: number | null;
+  cloudHighPct: number | null;
+  precipMm: number | null;
+  precipProbPct: number | null;
+  windKmh: number | null;
+  gustKmh: number | null;
+  visibilityM: number | null;
+  weatherCode: number | null;
+  fogLikely: boolean;
+}
+export interface WeatherForecast { lat: number; lng: number; fetchedAt: string; hourly: WeatherHour[] }
 
 export const api = {
   // --- auth ---
@@ -258,8 +284,11 @@ export const api = {
   deleteRemote: (id: string) => fetch(`/api/remotes/${id}`, { method: 'DELETE' }).then((r) => json<{ ok: boolean }>(r)),
   syncRemote: (id: string) => fetch(`/api/remotes/${id}/sync`, { method: 'POST' }).then((r) => json<{ places: number; spots: number }>(r)),
 
+  // --- weather (Open-Meteo, hourly, UTC) ---
+  weather: (lat: number, lng: number, days = 7) => fetch(`/api/weather?lat=${lat}&lng=${lng}&days=${days}`).then((r) => json<WeatherForecast>(r)),
   // --- planes ---
   planes: (lat: number, lng: number, nm = 40) => fetch(`/api/planes?lat=${lat}&lng=${lng}&nm=${nm}`).then((r) => json<Plane[]>(r)),
+  buildings: (lat: number, lng: number, r = 250) => fetch(`/api/buildings?lat=${lat}&lng=${lng}&r=${r}`).then((r) => json<GeoJSON.FeatureCollection>(r)),
 
   // --- rail ---
   rail: () => fetch('/api/rail').then((r) => json<GeoJSON.FeatureCollection>(r)),

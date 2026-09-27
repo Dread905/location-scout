@@ -16,3 +16,19 @@ test('mapCandidateElements: nodes and ways (via center), deduped by ref', () => 
   assert.equal(rows[1].ref, 'way/2');
   assert.equal(rows[1].lat, -33.43);
 });
+
+import { buildingsFromOverpass } from '../src/sources/osm.js';
+
+test('buildingsFromOverpass: closes rings, derives height from tag or levels', () => {
+  const sq = [{ lat: 0, lon: 0 }, { lat: 0, lon: 1 }, { lat: 1, lon: 1 }, { lat: 1, lon: 0 }];
+  const fc = buildingsFromOverpass([
+    { type: 'way', id: 1, geometry: [...sq, sq[0]], tags: { building: 'yes', height: '12 m' } },
+    { type: 'way', id: 2, geometry: sq, tags: { building: 'yes', 'building:levels': '4' } },
+    { type: 'way', id: 3, geometry: [...sq, sq[0]], tags: { building: 'yes' } },
+    { type: 'way', id: 4, geometry: sq.slice(0, 2) },
+  ]);
+  assert.equal(fc.features.length, 3);
+  assert.deepEqual(fc.features.map((f) => f.properties?.height), [12, 12, undefined]);
+  const ring = fc.features[1].geometry.coordinates[0];
+  assert.deepEqual(ring[0], ring[ring.length - 1]);
+});

@@ -41,6 +41,12 @@ export function planeLabel(callsign: string, hex: string, altM: number | null): 
 }
 
 /** 0 at flat view, 1 when pitched enough for 3D; smoothstep between. */
+/** 3D trains only read at street zoom; below this they're flat markers. 0 at z13.5, 1 at z14.5. */
+export function zoomBlend(zoom: number): number {
+  const t = Math.min(1, Math.max(0, zoom - 13.5));
+  return t * t * (3 - 2 * t);
+}
+
 export function pitchBlend(pitch: number): number {
   const t = Math.min(1, Math.max(0, (pitch - PITCH_3D_START) / (PITCH_3D_FULL - PITCH_3D_START)));
   return t * t * (3 - 2 * t);

@@ -3,14 +3,20 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { GeoJSONSource, LngLatBounds, Map as MlMap, MapMouseEvent, NavigationControl, Popup, ScaleControl, setWorkerUrl } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
-import { api, Candidate, Place, Plane, Spot, TrainPosition, User } from '../api.js';
+import { api, Candidate, Place, Plane, Spot, TrainPosition, User, type WeatherForecast } from '../api.js';
+import { hourAt, pickRadarFrame, RAINVIEWER_INDEX, radarTileUrl, weatherIcon, type RadarIndex } from '../map/weather.js';
 import {
   CLICKABLE, initFeedLayers, initLayers, PLANE_LAYERS, setImagery, setLayerVisible, setTerrain3d, STYLE_URL, updateCandidates, updateDraft,
   updateMood, updatePlacesAndSpots, updatePlanes, updateRail, updateRays, setNearbyHighlight, updateShadows, updateTrains, updateWedges,
+  TRAIN_LAYERS, setTrains3d, updatePlanePositions, hiddenLayers, setRadarFrame,
 } from '../map/layers.js';
+import { due, MotionTracker, planePredict, trainPredict } from '../map/motion.js';
+import { carriageCount } from '../map/trains3d.js';
+import { collectRailTiles, RailSnapper } from '../map/railSnap.js';
 import { goodNow, sunPos } from '../map/sun.js';
 import { Legend } from '../components/Legend.js';
 import { NearbyList } from '../components/NearbyList.js';
+import { attachGlance, attachThumbLoader, GLANCE_LAYERS } from '../map/spotGlance.js';
 import { CATEGORIES, groupLayers, loadVisibility, saveVisibility, type Visibility } from '../map/legend.js';
 import { deadReckon } from '../map/planes.js';
 import { useMapTime } from '../time.js';
@@ -24,6 +30,15 @@ import DayStrip from '../components/DayStrip.js';
 type Selection = { type: 'spot' | 'place' | 'candidate'; id: string } | null;
 type Editing = { type: 'spot'; draft: SpotDraft } | { type: 'place'; draft: PlaceDraft } | null;
 const TRAINS_POLL_MS = 20_000; // matches the server's realtime cache
+/** Follow mode re-centres the camera this often, with a linear ease of the same length so the motion is continuous. */
+const FOLLOW_EASE_MS = 1000;
+
+type Follow = { kind: 'plane' | 'train'; id: string; name: string; heading: boolean };
+const planeName = (p: { flight: string; hex: string }) => p.flight.trim() || p.hex.toUpperCase();
+const trainName = (t: { route: string; headsign: string }) => (t.headsign ? `${t.route || 'Train'} → ${t.headsign}` : t.route || 'Train');
+/** Same numbers, same prediction: a re-served (cached) poll keeps its animation instead of restarting it. */
+const planeKey = (p: Plane) => `${p.lat},${p.lon},${p.track},${p.gs},${p.seen}`;
+const trainKey = (t: TrainPosition) => `${t.lat},${t.lng},${t.bearing},${t.speedMps},${t.pathAtKm}`;
 
 export const MAP_CENTRE_KEY = 'ls.mapCentre';
 
@@ -35,7 +50,8 @@ const newSpot = (lat: number, lng: number, placeId: string | null = null): SpotD
 });
 
 /** Legend keys whose visibility is applied by their own effect below. */
-const FEED_KEYS = ['imagery', 'planes', 'rail', 'trains', 'candidates'];
+const FEED_KEYS = ['imagery', 'planes', 'rail', 'trains', 'candidates', 'weather'];
+const RADAR_POLL_MS = 10 * 60_000;
 
 export default function MapPage({ user }: { user: User | null }) {
   const container = useRef<HTMLDivElement>(null);
@@ -58,11 +74,21 @@ export default function MapPage({ user }: { user: User | null }) {
   const [vis, setVis] = useState<Visibility>(loadVisibility);
   useEffect(() => saveVisibility(vis), [vis]);
   const toggle = (key: string, on = !vis[key]) => setVis((v) => ({ ...v, [key]: on }));
-  const { planes: planesOn, rail: railOn, trains: trainsOn, candidates: candidatesOn, imagery } = vis;
+  const { planes: planesOn, rail: railOn, trains: trainsOn, candidates: candidatesOn, imagery, weather: weatherOn } = vis;
   const [rail, setRail] = useState<GeoJSON.FeatureCollection | null>(null);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [planeData, setPlaneData] = useState<Plane[]>([]);
   const [trainData, setTrainData] = useState<TrainPosition[]>([]);
+
+  // Smooth movement between polls, and follow mode (camera on one vehicle).
+  const planeMotion = useRef(new MotionTracker());
+  const trainMotion = useRef(new MotionTracker());
+  const railSnapper = useRef(new RailSnapper());
+  const planeExtras = useRef<{ sun?: { azimuth: number; altitude: number } }>({});
+  const [follow, setFollow] = useState<Follow | null>(null);
+  const followRef = useRef<Follow | null>(null);
+  followRef.current = follow;
+  const [followNote, setFollowNote] = useState('');
 
   const canEdit = (ownerId: string) => !!user && (user.role === 'admin' || user.id === ownerId);
 
@@ -110,6 +136,7 @@ export default function MapPage({ user }: { user: User | null }) {
       api.planes(centre.lat, centre.lng, 60).then((planes) => {
         if (stop) return;
         setPlaneData(planes);
+        planeMotion.current.update(planes.map((p) => ({ id: p.hex, key: planeKey(p), predict: planePredict(p) })), performance.now());
         const projections = planes.filter((p) => p.track != null && p.gs != null).map((p) => {
           const pts: [number, number][] = [[p.lon, p.lat]];
           for (let m2 = 3; m2 <= 15; m2 += 3) { const d = deadReckon(p, m2); if (d) pts.push([d.lon, d.lat]); }
@@ -119,7 +146,8 @@ export default function MapPage({ user }: { user: User | null }) {
         const ghosts = aheadMin > 0.5 && aheadMin <= 15
           ? planes.map((p) => { const d = deadReckon(p, aheadMin); return d ? { hex: p.hex, lat: d.lat, lon: d.lon } : null; }).filter((g): g is { hex: string; lat: number; lon: number } => g !== null)
           : [];
-        updatePlanes(map, planes, projections, ghosts, sunPos(time, centre.lat, centre.lng));
+        planeExtras.current.sun = sunPos(time, centre.lat, centre.lng);
+        updatePlanes(map, planes, projections, ghosts, planeExtras.current.sun);
       }).catch(() => {});
     };
     tick();
@@ -130,17 +158,43 @@ export default function MapPage({ user }: { user: User | null }) {
   // Trains: live positions *now* (not the slider time), polled while on and the tab is visible.
   useEffect(() => {
     if (!map) return;
-    setLayerVisible(map, ['trains'], trainsOn);
+    setLayerVisible(map, TRAIN_LAYERS, trainsOn);
     if (!trainsOn) { trainPopup.current?.remove(); setTrainData([]); return; }
     let stop = false;
+    let raw: TrainPosition[] = [];
+    // Trains the server couldn't snap go onto the basemap's own rail lines (client fallback; see map/railSnap.ts).
+    const show = () => {
+      const positions = railSnapper.current.snap(raw);
+      trainMotion.current.update(positions.map((t) => ({ id: t.tripId, key: trainKey(t), predict: trainPredict(t) })), performance.now());
+      updateTrains(map, positions);
+      setTrainData(positions);
+    };
     const tick = () => {
       if (document.hidden) return;
-      api.trains().then((r) => { if (!stop) { updateTrains(map, r.positions); setTrainData(r.positions); } }).catch(() => {});
+      api.trains().then((r) => {
+        if (stop) return;
+        raw = r.positions;
+        railSnapper.current.setTiles(collectRailTiles(map));
+        show();
+      }).catch(() => {});
     };
+    // New basemap tiles: rebuild the rail graph (throttled) and re-snap if it changed and some train needs it.
+    let pending: ReturnType<typeof setTimeout> | null = null;
+    const onSource = (e: { sourceId?: string; isSourceLoaded?: boolean; tile?: unknown }) => {
+      if (pending || !e.tile || !raw.some((t) => !t.snapped)) return;
+      pending = setTimeout(() => {
+        pending = null;
+        if (!stop && railSnapper.current.setTiles(collectRailTiles(map))) show();
+      }, 1000);
+    };
+    map.on('sourcedata', onSource);
     tick();
     const id = setInterval(tick, TRAINS_POLL_MS);
     document.addEventListener('visibilitychange', tick);
-    return () => { stop = true; clearInterval(id); document.removeEventListener('visibilitychange', tick); };
+    return () => {
+      stop = true; clearInterval(id); if (pending) clearTimeout(pending);
+      map.off('sourcedata', onSource); document.removeEventListener('visibilitychange', tick);
+    };
   }, [map, trainsOn]);
 
   // Candidates: OSM points of interest, fetched by bbox while the layer is on.
@@ -153,6 +207,95 @@ export default function MapPage({ user }: { user: User | null }) {
     api.candidates(`${b.getSouth()},${b.getWest()},${b.getNorth()},${b.getEast()}`).then((c) => { if (!stop) { setCandidates(c); updateCandidates(map, c); } }).catch(() => {});
     return () => { stop = true; };
   }, [map, candidatesOn, view]);
+
+  // Animation: move planes and trains between polls, at most every FRAME_MS, and only for shown layers.
+  const trainById = useMemo(() => new Map(trainData.map((t) => [t.tripId, t])), [trainData]);
+  const animData = useRef({ planeData, trainData, trainById });
+  animData.current = { planeData, trainData, trainById };
+  useEffect(() => {
+    if (!map) return;
+    let raf = 0;
+    let last = 0;
+    let lastCam = 0;
+    const frame = (now: number) => {
+      raf = requestAnimationFrame(frame);
+      if (!due(last, now)) return;
+      last = now;
+      const { planeData: planes, trainData: trains, trainById: byId } = animData.current;
+      if (planes.length && !hiddenLayers.has('planes')) {
+        updatePlanePositions(map, planes.map((p) => {
+          const pose = planeMotion.current.pose(p.hex, now);
+          return pose ? { ...p, lat: pose.lat, lon: pose.lng } : p;
+        }), planeExtras.current.sun);
+      }
+      if (trains.length && !hiddenLayers.has('trains')) {
+        const moved = trains.map((t) => ({ t, pose: trainMotion.current.pose(t.tripId, now) }));
+        updateTrains(map, moved.map(({ t, pose }) => (pose ? { ...t, lat: pose.lat, lng: pose.lng } : t)));
+        setTrains3d(moved.map(({ t, pose }) => ({
+          id: t.tripId, lng: pose?.lng ?? t.lng, lat: pose?.lat ?? t.lat, bearing: pose?.bearing ?? t.bearing ?? null, live: t.status === 'live',
+          carriages: carriageCount(t), ...(pose?.path ? { path: pose.path, pathKm: pose.pathKm } : { path: byId.get(t.tripId)?.path, pathKm: t.pathAtKm }),
+        })));
+      }
+      const f = followRef.current;
+      // Not while a finger or button is down: easing the camera would cancel the user's drag before it registers.
+      if (f && !pointerDown.current && (now - lastCam >= FOLLOW_EASE_MS || lastCam === 0)) {
+        const pose = (f.kind === 'plane' ? planeMotion.current : trainMotion.current).pose(f.id, now + FOLLOW_EASE_MS);
+        if (pose) {
+          lastCam = now;
+          map.easeTo({ center: [pose.lng, pose.lat], ...(f.heading && pose.bearing != null ? { bearing: pose.bearing } : {}),
+            duration: FOLLOW_EASE_MS, easing: (x) => x, essential: true });
+        }
+      }
+      if (!f) lastCam = 0;
+    };
+    raf = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(raf);
+  }, [map]);
+
+  // Follow mode: any drag/zoom/rotate/pitch by the user (an event with an originalEvent) hands the camera back.
+  const pointerDown = useRef(false);
+  useEffect(() => {
+    if (!map) return;
+    const stopOnGesture = (e: { originalEvent?: Event }) => { if (e.originalEvent && followRef.current) setFollow(null); };
+    const evs = ['dragstart', 'zoomstart', 'rotatestart', 'pitchstart', 'wheel'] as const;
+    for (const ev of evs) map.on(ev, stopOnGesture);
+    const down = () => { pointerDown.current = true; };
+    const up = () => { pointerDown.current = false; };
+    const downs = ['mousedown', 'touchstart'] as const;
+    const ups = ['mouseup', 'touchend', 'touchcancel'] as const;
+    for (const ev of downs) map.on(ev, down);
+    for (const ev of ups) map.on(ev, up);
+    window.addEventListener('mouseup', up);
+    return () => {
+      for (const ev of evs) map.off(ev, stopOnGesture);
+      for (const ev of downs) map.off(ev, down);
+      for (const ev of ups) map.off(ev, up);
+      window.removeEventListener('mouseup', up);
+    };
+  }, [map]);
+
+  // A followed vehicle that drops out of its feed (or the feed switched off): say so and stop.
+  useEffect(() => {
+    if (!follow) return;
+    const gone = follow.kind === 'plane' ? !planeData.some((p) => p.hex === follow.id) : !trainData.some((t) => t.tripId === follow.id);
+    if (!gone) return;
+    setFollow(null);
+    setFollowNote(`${follow.name} is no longer in the feed — stopped following`);
+  }, [planeData, trainData]);
+  useEffect(() => {
+    if (!followNote) return;
+    const id = setTimeout(() => setFollowNote(''), 5000);
+    return () => clearTimeout(id);
+  }, [followNote]);
+
+  function startFollow(kind: Follow['kind'], id: string) {
+    const name = kind === 'plane'
+      ? planeName(planeData.find((p) => p.hex === id) ?? { flight: '', hex: id })
+      : trainName(trainData.find((t) => t.tripId === id) ?? { route: '', headsign: '' });
+    trainPopup.current?.remove();
+    setFollowNote('');
+    setFollow({ kind, id, name, heading: false });
+  }
 
   useEffect(() => {
     if (!map) return;
@@ -235,6 +378,28 @@ export default function MapPage({ user }: { user: User | null }) {
   }, [map, view]);
 
   useEffect(() => { if (map) setImagery(map, imagery); }, [map, imagery]);
+
+  // Weather: RainViewer radar frames (index refreshed every 10 min) and an Open-Meteo readout for the map centre.
+  const [radarIdx, setRadarIdx] = useState<RadarIndex | null>(null);
+  useEffect(() => {
+    if (!weatherOn) return;
+    const load = () => { if (document.visibilityState === 'visible') fetch(RAINVIEWER_INDEX).then((r) => r.json()).then(setRadarIdx).catch(() => {}); };
+    load();
+    const id = setInterval(load, RADAR_POLL_MS);
+    return () => clearInterval(id);
+  }, [weatherOn]);
+  const radarFrame = radarIdx ? pickRadarFrame(radarIdx, time.getTime()) : null;
+  useEffect(() => {
+    if (map) setRadarFrame(map, radarIdx && radarFrame ? radarTileUrl(radarIdx.host, radarFrame) : null, !!weatherOn);
+  }, [map, weatherOn, radarIdx?.host, radarFrame?.path]);
+  const [forecast, setForecast] = useState<WeatherForecast | null>(null);
+  useEffect(() => {
+    if (!weatherOn) return;
+    const id = setTimeout(() => api.weather(centre.lat, centre.lng).then(setForecast).catch(() => setForecast(null)), 600);
+    return () => clearTimeout(id);
+  }, [weatherOn, centre.lat, centre.lng]);
+  const wxHour = weatherOn ? hourAt(forecast, time.getTime()) : null;
+  const wxNight = sunPos(time, centre.lat, centre.lng).altitude < 0;
   // Categories without their own feed effect: apply straight from the legend state.
   useEffect(() => {
     if (!map) return;
@@ -267,14 +432,24 @@ export default function MapPage({ user }: { user: User | null }) {
     }
     if (editing) return;
     const train = map.getLayer('trains') ? map.queryRenderedFeatures(e.point, { layers: ['trains'] })[0] : undefined;
-    if (train) return showTrainPopup(map, train);
+    if (train) return showTrainPopup(map, train, (id) => startFollow('train', id));
+    const planeLayers = ['planes', 'planes-label'].filter((l) => map.getLayer(l) && !hiddenLayers.has(l));
+    const plane = planeLayers.length ? map.queryRenderedFeatures(e.point, { layers: planeLayers })[0] : undefined;
+    const pl = plane && planeData.find((p) => p.hex === plane.properties?.id);
+    if (pl) return showPlanePopup(map, pl, (id) => startFollow('plane', id));
     const hit = map.queryRenderedFeatures(e.point, { layers: CLICKABLE.filter((l) => map.getLayer(l)) })[0];
     if (!hit) return setSelected(null);
     const id = hit.properties?.id as string;
     if (hit.layer.id === 'clusters') {
       (map.getSource('spots') as GeoJSONSource).getClusterExpansionZoom(hit.properties.cluster_id)
         .then((zoom) => map.easeTo({ center: (hit.geometry as GeoJSON.Point).coordinates as [number, number], zoom }));
-    } else if (hit.layer.id === 'spot-points' || hit.layer.id === 'place-spots') {
+    } else if (GLANCE_LAYERS.includes(hit.layer.id)) {
+      // Touch has no hover: the first tap on a spot shows its glance card, the next one selects it.
+      if (lastPointer.current === 'touch' && glance.current && glance.current.shownId !== id) {
+        glance.current.show(id, (hit.geometry as GeoJSON.Point).coordinates as [number, number]);
+        return;
+      }
+      glance.current?.hide();
       setSelected({ type: 'spot', id });
       const [lng, lat] = (hit.geometry as GeoJSON.Point).coordinates;
       focus(lng, lat);
@@ -288,12 +463,30 @@ export default function MapPage({ user }: { user: User | null }) {
       if (p && hit.layer.id === 'place-points') fitPlace(p);
     }
   };
+  // Spot glance: lazy cover thumbnails and the hover card. Refs keep the handlers on current data.
+  const glance = useRef<ReturnType<typeof attachGlance> | null>(null);
+  const lastPointer = useRef('mouse');
+  const glanceData = useRef<{ spots: Spot[]; time: Date; home: { lat: number; lng: number } | null }>({ spots: [], time, home: null });
+  glanceData.current.spots = shownSpots;
+  glanceData.current.time = time;
+  useEffect(() => {
+    if (!map) return;
+    const detachThumbs = attachThumbLoader(map);
+    const g = attachGlance(map, (id) => glanceData.current.spots.find((s) => s.id === id),
+      () => ({ time: glanceData.current.time, home: glanceData.current.home }));
+    glance.current = g;
+    api.settings().then((s) => { glanceData.current.home = s.home; }).catch(() => {});
+    const canvas = map.getCanvas();
+    const onPointer = (e: PointerEvent) => { lastPointer.current = e.pointerType; };
+    canvas.addEventListener('pointerdown', onPointer);
+    return () => { detachThumbs(); g.detach(); glance.current = null; canvas.removeEventListener('pointerdown', onPointer); };
+  }, [map]);
   useEffect(() => {
     if (!map) return;
     const click = (e: MapMouseEvent) => onClick.current(e);
     map.on('click', click);
     const pointer = (on: boolean) => () => { map.getCanvas().style.cursor = on ? 'pointer' : ''; };
-    for (const l of CLICKABLE) { map.on('mouseenter', l, pointer(true)); map.on('mouseleave', l, pointer(false)); }
+    for (const l of [...CLICKABLE, 'trains', 'planes']) { map.on('mouseenter', l, pointer(true)); map.on('mouseleave', l, pointer(false)); }
     return () => { map.off('click', click); };
   }, [map]);
 
@@ -362,17 +555,29 @@ export default function MapPage({ user }: { user: User | null }) {
     <div className={`mapshell${panelOpen ? ' mapshell--panel' : ''}`}>
       <div ref={container} className="mapshell__map" />
       {error && <div className="maptoast error">{error}</div>}
+      {follow && (
+        <div className="followpill" role="status">
+          <span>Following <strong>{follow.name}</strong></span>
+          <label title="Turn the map to the vehicle's heading"><input type="checkbox" checked={follow.heading}
+            onChange={(e) => setFollow({ ...follow, heading: e.target.checked })} />heading</label>
+          <button onClick={() => setFollow(null)} title="Stop following" aria-label="Stop following">✕</button>
+        </div>
+      )}
+      {followNote && !follow && <div className="maptoast">{followNote}</div>}
       {mode !== 'browse' && <div className="maptoast">{mode === 'pick-spot' ? 'Click the map to place the spot' : 'Click the map to add outline points'}</div>}
 
       <Legend map={map} vis={vis} onToggle={toggle} />
       <NearbyList planes={planesOn ? planeData : null} trains={trainsOn ? trainData : null} centre={centre}
         onHover={(at) => { if (map) setNearbyHighlight(map, at); }}
+        following={follow?.id ?? null}
+        onFollow={(kind, r) => (follow?.id === r.id ? setFollow(null) : startFollow(kind, r.id))}
         onPlane={(r) => { if (map) map.flyTo({ center: [r.lng, r.lat], zoom: Math.max(map.getZoom(), 11) }); }}
         onTrain={(r) => {
           if (!map) return;
           map.flyTo({ center: [r.lng, r.lat], zoom: Math.max(map.getZoom(), 12) });
           const t = trainData.find((x) => x.tripId === r.id);
-          if (t) showTrainPopup(map, { type: 'Feature', properties: { route: t.route, headsign: t.headsign, status: t.status, delaySec: t.delaySec }, geometry: { type: 'Point', coordinates: [t.lng, t.lat] } });
+          if (t) showTrainPopup(map, { type: 'Feature', properties: { id: t.tripId, route: t.route, headsign: t.headsign, status: t.status, delaySec: t.delaySec }, geometry: { type: 'Point', coordinates: [t.lng, t.lat] } },
+            (id) => startFollow('train', id));
         }} />
       <div className="maptools">
         <button className={`chip${goodOnly ? ' active' : ''}`} onClick={() => setGoodOnly(!goodOnly)} title="Only spots whose good times match the map time">Good now</button>
@@ -381,6 +586,7 @@ export default function MapPage({ user }: { user: User | null }) {
         <button className={`chip${planesOn ? ' active' : ''}`} onClick={() => toggle('planes')} title="Live aircraft, dead-reckoned 15 minutes ahead">✈ Planes</button>
         <button className={`chip${railOn ? ' active' : ''}`} onClick={() => toggle('rail')}>🛤 Rail</button>
         <button className={`chip${trainsOn ? ' active' : ''}`} onClick={() => toggle('trains')} title="Live passenger train positions, refreshed every 20s (needs a TfNSW key)">🚆 Trains</button>
+        <button className={`chip${weatherOn ? ' active' : ''}`} onClick={() => toggle('weather')} title="Rain radar (RainViewer, recent past only) and the forecast at the map centre for the map time">🌦 Weather</button>
         <button className={`chip${candidatesOn ? ' active' : ''}`} onClick={() => toggle('candidates')} title="OpenStreetMap viewpoints, ruins and other candidates">📍 Candidates</button>
         {user && !editing && (
           <>
@@ -450,6 +656,20 @@ export default function MapPage({ user }: { user: User | null }) {
         </aside>
       )}
 
+      {weatherOn && (
+        <div className="wxpill" role="status" title={wxHour ? `Forecast for the map centre at ${new Date(wxHour.time).toLocaleString()} (Open-Meteo)` : undefined}>
+          {wxHour ? (<>
+            <span className="wxpill__icon">{weatherIcon(wxHour, wxNight)}</span>
+            {wxHour.tempC != null && <strong>{Math.round(wxHour.tempC)}°</strong>}
+            <span>☁ {wxHour.cloudPct ?? '–'}%</span>
+            <span>💧 {wxHour.precipMm ?? 0} mm{wxHour.precipProbPct != null ? ` · ${wxHour.precipProbPct}%` : ''}</span>
+            <span>💨 {wxHour.windKmh != null ? Math.round(wxHour.windKmh) : '–'}{wxHour.gustKmh != null ? `–${Math.round(wxHour.gustKmh)}` : ''} km/h</span>
+            {wxHour.fogLikely && <span className="wxpill__warn">fog</span>}
+          </>) : <span className="wxpill__muted">{forecast ? 'No forecast for this time' : 'Loading weather…'}</span>}
+          {!radarFrame && <span className="wxpill__muted" title="RainViewer only has the last ~2 hours">· radar n/a at this time</span>}
+          {radarFrame?.nowcast && <span className="wxpill__muted">· radar nowcast</span>}
+        </div>
+      )}
       <TimeBar lat={origin.lat} lng={origin.lng} />
     </div>
   );
@@ -467,15 +687,28 @@ function delayText(sec: number): string {
 
 const trainPopup: { current: Popup | null } = { current: null };
 
-/** A small popup for a train marker: route, headsign, live/estimated and delay. */
-function showTrainPopup(map: MlMap, f: GeoJSON.Feature) {
-  const p = (f.properties ?? {}) as { route?: string; headsign?: string; status?: string; delaySec?: number };
+/** A small popup for a train marker: route, headsign, live/estimated and delay, and a Follow button. */
+function showTrainPopup(map: MlMap, f: GeoJSON.Feature, onFollow?: (id: string) => void) {
+  const p = (f.properties ?? {}) as { id?: string; route?: string; headsign?: string; status?: string; delaySec?: number };
   const live = p.status === 'live';
   const html = `<strong>${escapeHtml(p.route || 'Train')}</strong>${p.headsign ? ` → ${escapeHtml(p.headsign)}` : ''}<br/>`
-    + `<span>${live ? '● Live position' : '○ Scheduled estimate'} · ${delayText(Number(p.delaySec ?? 0))}</span>`;
+    + `<span>${live ? '● Live position' : '○ Scheduled estimate'} · ${delayText(Number(p.delaySec ?? 0))}</span>`
+    + (onFollow && p.id ? '<br/><button class="popup-follow" type="button">Follow</button>' : '');
+  openPopup(map, (f.geometry as GeoJSON.Point).coordinates as [number, number], html, onFollow && p.id ? () => onFollow(p.id!) : undefined);
+}
+
+/** Popup for a clicked plane: callsign, type, altitude and speed, and a Follow button. */
+function showPlanePopup(map: MlMap, p: Plane, onFollow: (hex: string) => void) {
+  const alt = p.alt_baro == null ? '' : p.alt_baro <= 0 ? ' · ground' : ` · ${Math.round((p.alt_baro * 0.3048) / 10) * 10} m`;
+  const html = `<strong>${escapeHtml(planeName(p))}</strong>${p.t ? ` <span>${escapeHtml(p.t)}</span>` : ''}<br/>`
+    + `<span>${p.gs != null ? `${Math.round(p.gs * 1.852)} km/h` : 'speed –'}${alt}</span>`
+    + '<br/><button class="popup-follow" type="button">Follow</button>';
+  openPopup(map, [p.lon, p.lat], html, () => onFollow(p.hex));
+}
+
+function openPopup(map: MlMap, at: [number, number], html: string, onFollow?: () => void) {
   trainPopup.current?.remove();
-  trainPopup.current = new Popup({ closeButton: true, offset: 10 })
-    .setLngLat((f.geometry as GeoJSON.Point).coordinates as [number, number])
-    .setHTML(html)
-    .addTo(map);
+  const popup = new Popup({ closeButton: true, offset: 10 }).setLngLat(at).setHTML(html).addTo(map);
+  popup.getElement()?.querySelector('.popup-follow')?.addEventListener('click', () => { popup.remove(); onFollow?.(); });
+  trainPopup.current = popup;
 }
