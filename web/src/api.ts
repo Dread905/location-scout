@@ -177,6 +177,23 @@ async function json<T>(res: Response): Promise<T> {
 
 const jsonHeaders = { 'Content-Type': 'application/json' };
 
+export interface WeatherHour {
+  time: string; // ISO (UTC)
+  tempC: number | null;
+  cloudPct: number | null;
+  cloudLowPct: number | null;
+  cloudMidPct: number | null;
+  cloudHighPct: number | null;
+  precipMm: number | null;
+  precipProbPct: number | null;
+  windKmh: number | null;
+  gustKmh: number | null;
+  visibilityM: number | null;
+  weatherCode: number | null;
+  fogLikely: boolean;
+}
+export interface WeatherForecast { lat: number; lng: number; fetchedAt: string; hourly: WeatherHour[] }
+
 export const api = {
   // --- auth ---
   authStatus: () => fetch('/api/auth/status').then((r) => json<AuthStatus>(r)),
@@ -265,6 +282,8 @@ export const api = {
   deleteRemote: (id: string) => fetch(`/api/remotes/${id}`, { method: 'DELETE' }).then((r) => json<{ ok: boolean }>(r)),
   syncRemote: (id: string) => fetch(`/api/remotes/${id}/sync`, { method: 'POST' }).then((r) => json<{ places: number; spots: number }>(r)),
 
+  // --- weather (Open-Meteo, hourly, UTC) ---
+  weather: (lat: number, lng: number, days = 7) => fetch(`/api/weather?lat=${lat}&lng=${lng}&days=${days}`).then((r) => json<WeatherForecast>(r)),
   // --- planes ---
   planes: (lat: number, lng: number, nm = 40) => fetch(`/api/planes?lat=${lat}&lng=${lng}&nm=${nm}`).then((r) => json<Plane[]>(r)),
   buildings: (lat: number, lng: number, r = 250) => fetch(`/api/buildings?lat=${lat}&lng=${lng}&r=${r}`).then((r) => json<GeoJSON.FeatureCollection>(r)),

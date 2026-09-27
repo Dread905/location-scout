@@ -6,6 +6,7 @@
  */
 import { Db } from '../db.js';
 import { Bbox, bboxFromRadius } from '../geo.js';
+import { overpassQuery } from './overpass.js';
 import type { TaskLog } from '../tasks/registry.js';
 import { buildTrackGraph, nearestSegment, type TrackGraph } from '../feeds/trackSnap.js';
 
@@ -35,20 +36,7 @@ interface OverpassCenterWay {
 type OverpassElement = OverpassWay | OverpassNode | OverpassCenterWay;
 
 async function overpassFetch(query: string): Promise<{ elements: OverpassElement[] }> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch(OVERPASS_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `data=${encodeURIComponent(query)}`,
-      signal: controller.signal,
-    });
-    if (!res.ok) throw new Error(`Overpass returned ${res.status}`);
-    return (await res.json()) as { elements: OverpassElement[] };
-  } finally {
-    clearTimeout(timer);
-  }
+  return overpassQuery(query, { timeoutMs: FETCH_TIMEOUT_MS });
 }
 
 const bboxClause = (b: Bbox) => `${b.south},${b.west},${b.north},${b.east}`;

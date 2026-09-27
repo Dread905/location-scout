@@ -3,11 +3,12 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { GeoJSONSource, LngLatBounds, Map as MlMap, MapMouseEvent, NavigationControl, Popup, ScaleControl, setWorkerUrl } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
-import { api, Candidate, Place, Plane, Spot, TrainPosition, User } from '../api.js';
+import { api, Candidate, Place, Plane, Spot, TrainPosition, User, type WeatherForecast } from '../api.js';
+import { hourAt, pickRadarFrame, RAINVIEWER_INDEX, radarTileUrl, weatherIcon, type RadarIndex } from '../map/weather.js';
 import {
   CLICKABLE, initFeedLayers, initLayers, PLANE_LAYERS, setImagery, setLayerVisible, setTerrain3d, STYLE_URL, updateCandidates, updateDraft,
   updateMood, updatePlacesAndSpots, updatePlanes, updateRail, updateRays, setNearbyHighlight, updateShadows, updateTrains, updateWedges,
-  TRAIN_LAYERS, setTrains3d, updatePlanePositions, hiddenLayers,
+  TRAIN_LAYERS, setTrains3d, updatePlanePositions, hiddenLayers, setRadarFrame,
 } from '../map/layers.js';
 import { due, MotionTracker, planePredict, trainPredict } from '../map/motion.js';
 import { carriageCount } from '../map/trains3d.js';
@@ -48,7 +49,8 @@ const newSpot = (lat: number, lng: number, placeId: string | null = null): SpotD
 });
 
 /** Legend keys whose visibility is applied by their own effect below. */
-const FEED_KEYS = ['imagery', 'planes', 'rail', 'trains', 'candidates'];
+const FEED_KEYS = ['imagery', 'planes', 'rail', 'trains', 'candidates', 'weather'];
+const RADAR_POLL_MS = 10 * 60_000;
 
 export default function MapPage({ user }: { user: User | null }) {
   const container = useRef<HTMLDivElement>(null);
@@ -71,7 +73,7 @@ export default function MapPage({ user }: { user: User | null }) {
   const [vis, setVis] = useState<Visibility>(loadVisibility);
   useEffect(() => saveVisibility(vis), [vis]);
   const toggle = (key: string, on = !vis[key]) => setVis((v) => ({ ...v, [key]: on }));
-  const { planes: planesOn, rail: railOn, trains: trainsOn, candidates: candidatesOn, imagery } = vis;
+  const { planes: planesOn, rail: railOn, trains: trainsOn, candidates: candidatesOn, imagery, weather: weatherOn } = vis;
   const [rail, setRail] = useState<GeoJSON.FeatureCollection | null>(null);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [planeData, setPlaneData] = useState<Plane[]>([]);
@@ -353,6 +355,28 @@ export default function MapPage({ user }: { user: User | null }) {
   }, [map, view]);
 
   useEffect(() => { if (map) setImagery(map, imagery); }, [map, imagery]);
+
+  // Weather: RainViewer radar frames (index refreshed every 10 min) and an Open-Meteo readout for the map centre.
+  const [radarIdx, setRadarIdx] = useState<RadarIndex | null>(null);
+  useEffect(() => {
+    if (!weatherOn) return;
+    const load = () => { if (document.visibilityState === 'visible') fetch(RAINVIEWER_INDEX).then((r) => r.json()).then(setRadarIdx).catch(() => {}); };
+    load();
+    const id = setInterval(load, RADAR_POLL_MS);
+    return () => clearInterval(id);
+  }, [weatherOn]);
+  const radarFrame = radarIdx ? pickRadarFrame(radarIdx, time.getTime()) : null;
+  useEffect(() => {
+    if (map) setRadarFrame(map, radarIdx && radarFrame ? radarTileUrl(radarIdx.host, radarFrame) : null, !!weatherOn);
+  }, [map, weatherOn, radarIdx?.host, radarFrame?.path]);
+  const [forecast, setForecast] = useState<WeatherForecast | null>(null);
+  useEffect(() => {
+    if (!weatherOn) return;
+    const id = setTimeout(() => api.weather(centre.lat, centre.lng).then(setForecast).catch(() => setForecast(null)), 600);
+    return () => clearTimeout(id);
+  }, [weatherOn, centre.lat, centre.lng]);
+  const wxHour = weatherOn ? hourAt(forecast, time.getTime()) : null;
+  const wxNight = sunPos(time, centre.lat, centre.lng).altitude < 0;
   // Categories without their own feed effect: apply straight from the legend state.
   useEffect(() => {
     if (!map) return;
@@ -539,6 +563,7 @@ export default function MapPage({ user }: { user: User | null }) {
         <button className={`chip${planesOn ? ' active' : ''}`} onClick={() => toggle('planes')} title="Live aircraft, dead-reckoned 15 minutes ahead">✈ Planes</button>
         <button className={`chip${railOn ? ' active' : ''}`} onClick={() => toggle('rail')}>🛤 Rail</button>
         <button className={`chip${trainsOn ? ' active' : ''}`} onClick={() => toggle('trains')} title="Live passenger train positions, refreshed every 20s (needs a TfNSW key)">🚆 Trains</button>
+        <button className={`chip${weatherOn ? ' active' : ''}`} onClick={() => toggle('weather')} title="Rain radar (RainViewer, recent past only) and the forecast at the map centre for the map time">🌦 Weather</button>
         <button className={`chip${candidatesOn ? ' active' : ''}`} onClick={() => toggle('candidates')} title="OpenStreetMap viewpoints, ruins and other candidates">📍 Candidates</button>
         {user && !editing && (
           <>
@@ -608,6 +633,20 @@ export default function MapPage({ user }: { user: User | null }) {
         </aside>
       )}
 
+      {weatherOn && (
+        <div className="wxpill" role="status" title={wxHour ? `Forecast for the map centre at ${new Date(wxHour.time).toLocaleString()} (Open-Meteo)` : undefined}>
+          {wxHour ? (<>
+            <span className="wxpill__icon">{weatherIcon(wxHour, wxNight)}</span>
+            {wxHour.tempC != null && <strong>{Math.round(wxHour.tempC)}°</strong>}
+            <span>☁ {wxHour.cloudPct ?? '–'}%</span>
+            <span>💧 {wxHour.precipMm ?? 0} mm{wxHour.precipProbPct != null ? ` · ${wxHour.precipProbPct}%` : ''}</span>
+            <span>💨 {wxHour.windKmh != null ? Math.round(wxHour.windKmh) : '–'}{wxHour.gustKmh != null ? `–${Math.round(wxHour.gustKmh)}` : ''} km/h</span>
+            {wxHour.fogLikely && <span className="wxpill__warn">fog</span>}
+          </>) : <span className="wxpill__muted">{forecast ? 'No forecast for this time' : 'Loading weather…'}</span>}
+          {!radarFrame && <span className="wxpill__muted" title="RainViewer only has the last ~2 hours">· radar n/a at this time</span>}
+          {radarFrame?.nowcast && <span className="wxpill__muted">· radar nowcast</span>}
+        </div>
+      )}
       <TimeBar lat={origin.lat} lng={origin.lng} />
     </div>
   );

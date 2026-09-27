@@ -18,6 +18,7 @@ import { geocode } from './geocode.js';
 import { bboxFromRadius, haversine, parseBbox, parseLatLng } from './geo.js';
 import { parseGoodTimes, GoodTimesError, DEFAULT_GOOD_TIMES } from './goodTimes.js';
 import { fetchPlanes } from './feeds/planes.js';
+import { fetchWeather } from './feeds/weather.js';
 import { fetchBuildings } from './sources/osm.js';
 import {
   combinedFeedData, combinedRealtime, nextPasses, predictTrainPositions, tripCount, TRAIN_FEEDS,
@@ -652,6 +653,19 @@ app.get('/api/planes', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// --- weather ------------------------------------------------------------------
+
+app.get('/api/weather', async (req, res, next) => {
+  try {
+    const lat = Number(req.query.lat);
+    const lng = Number(req.query.lng);
+    const days = Number(req.query.days ?? 7);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return res.status(400).json({ error: 'lat and lng are required' });
+    const baseUrl = process.env.OPEN_METEO_URL ?? 'https://api.open-meteo.com';
+    res.json(await fetchWeather(baseUrl, lat, lng, Number.isFinite(days) ? days : 7));
+  } catch (err) { next(err); }
+});
+
 // Building footprints around a point, for Plan shoot's building shadows (the page has no map to read vector tiles from).
 app.get('/api/buildings', async (req, res, next) => {
   try {
@@ -659,7 +673,18 @@ app.get('/api/buildings', async (req, res, next) => {
     const lng = Number(req.query.lng);
     const r = Number(req.query.r ?? 250);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return res.status(400).json({ error: 'lat and lng are required' });
-    res.json(await fetchBuildings(lat, lng, Number.isFinite(r) ? r : 250));
+    const radius = Number.isFinite(r) ? r : 250;
+    // Footprints barely change: cache per ~10 m cell for a week so Overpass outages don't blank building shade.
+    const key = `buildings:${lat.toFixed(4)},${lng.toFixed(4)}:${Math.round(radius)}`;
+    const cached = db.getKv(key);
+    if (cached) return res.type('application/json').send(cached);
+    try {
+      const fc = await fetchBuildings(lat, lng, radius);
+      db.setKv(key, JSON.stringify(fc), new Date(Date.now() + 7 * 86_400_000).toISOString());
+      res.json(fc);
+    } catch (err) {
+      res.status(503).json({ error: (err as Error).message });
+    }
   } catch (err) { next(err); }
 });
 

@@ -1,5 +1,5 @@
 /** MapLibre sources and layers: base extras (imagery, DEM), light (mood, rays, shadows) and our places/spots. */
-import { GeoJSONSource, Map as MlMap, type LightSpecification } from 'maplibre-gl';
+import { GeoJSONSource, Map as MlMap, type RasterTileSource, type LightSpecification } from 'maplibre-gl';
 import type { Place, Spot } from '../api.js';
 import { ICON, thumbIconId } from './spotGlance.js';
 import { destination, wedge } from './geo.js';
@@ -11,6 +11,7 @@ import { altitudeM, pitchBlend, planeLabel, planeShadowPos } from './planes3d.js
 import { Planes3dLayer } from './planes3dLayer.js';
 import { Trains3dLayer, type Train3d } from './trains3dLayer.js';
 import { registerTerrainShadowProtocol, setBuildingShadows, setTerrainShadowSun, setTerrainShadowTerrain, SHADOW_RASTER_MAX_Z } from './terrainShadowSource.js';
+import { RADAR_MAX_NATIVE_Z } from './weather.js';
 import { moodAt, moonPos, sunPos, sunriseSunset } from './sun.js';
 
 export const STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
@@ -144,6 +145,12 @@ export function initLayers(map: MlMap) {
 
 /** Phase 3: planes, rail, trains, candidates. Kept separate from initLayers, called once alongside it. */
 export function initFeedLayers(map: MlMap) {
+  // Precipitation radar (RainViewer): tiles are swapped per frame by setRadarFrame; sits under our overlays.
+  map.addSource('radar', { type: 'raster', tiles: [], tileSize: 256, maxzoom: RADAR_MAX_NATIVE_Z,
+    attribution: 'Radar © <a href="https://www.rainviewer.com/">RainViewer</a>' });
+  map.addLayer({ id: 'radar', type: 'raster', source: 'radar', layout: { visibility: 'none' },
+    paint: { 'raster-opacity': 0.65, 'raster-fade-duration': 0 } }, map.getLayer('place-fill') ? 'place-fill' : undefined);
+
   // Rail network: lines coloured by usage/service, industrial/mine sites highlighted.
   map.addSource('rail', { type: 'geojson', data: empty() });
   map.addLayer({
@@ -218,6 +225,15 @@ export function initFeedLayers(map: MlMap) {
 }
 
 /** Layers the user has switched off (legend/chips); code that toggles visibility itself must respect this. */
+/** Point the radar layer at a frame's tile URL, or hide it (null). `on` is the legend/chip state. */
+export function setRadarFrame(map: MlMap, tileUrl: string | null, on: boolean) {
+  const source = map.getSource('radar') as RasterTileSource | undefined;
+  if (!source) return;
+  if (tileUrl && radarUrl !== tileUrl) { source.setTiles([tileUrl]); radarUrl = tileUrl; }
+  setLayerVisible(map, ['radar'], on && !!tileUrl);
+}
+let radarUrl = '';
+
 export const hiddenLayers = new Set<string>();
 
 export function setLayerVisible(map: MlMap, layerIds: string[], on: boolean) {

@@ -6,7 +6,7 @@
 import crypto from 'node:crypto';
 import { Db } from '../db.js';
 import { Bbox, bboxFromRadius } from '../geo.js';
-import { OVERPASS_URL } from './rail.js';
+import { overpassQuery } from './overpass.js';
 import type { TaskLog } from '../tasks/registry.js';
 import type { RailArea } from './rail.js';
 
@@ -47,20 +47,7 @@ function candidatesQuery(bboxes: Bbox[]): string {
 }
 
 async function overpassFetch(query: string): Promise<{ elements: OverpassCandidateElement[] }> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch(OVERPASS_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `data=${encodeURIComponent(query)}`,
-      signal: controller.signal,
-    });
-    if (!res.ok) throw new Error(`Overpass returned ${res.status}`);
-    return (await res.json()) as { elements: OverpassCandidateElement[] };
-  } finally {
-    clearTimeout(timer);
-  }
+  return overpassQuery(query, { timeoutMs: FETCH_TIMEOUT_MS });
 }
 
 export interface CandidateRow { ref: string; name: string; lat: number; lng: number; tags: Record<string, string> }
