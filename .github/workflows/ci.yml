@@ -1,0 +1,119 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          # The database layer uses node:sqlite, so nothing older will do.
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Typecheck
+        run: |
+          # tsconfig.test.json, not tsconfig.json: the build config includes only
+          # src, so a type error in a test file would otherwise reach nobody —
+          # tsx strips types to run them without checking any of it.
+          npx tsc --noEmit -p server/tsconfig.test.json
+          npx tsc --noEmit -p web
+      - name: Unit tests
+        run: npm test --workspace server
+      - name: Build
+        run: npm run build
+
+  release:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      released: ${{ steps.release.outputs.releases_created }}
+      version: ${{ steps.semver.outputs.version }}
+      minor: ${{ steps.semver.outputs.minor }}
+      major: ${{ steps.semver.outputs.major }}
+    steps:
+      - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
+        id: release
+        with:
+          release-type: node
+
+      - name: Work out the image tags
+        id: semver
+        if: steps.release.outputs.releases_created == 'true'
+        run: |
+          if [ -z "$TAG" ]; then
+            echo "release-please reported a release but named no tag" >&2
+            exit 1
+          fi
+          version="${TAG#v}"
+          major="${version%%.*}"
+          rest="${version#*.}"
+          minor="${rest%%.*}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "minor=$major.$minor" >> "$GITHUB_OUTPUT"
+          if [ "$major" != "0" ]; then echo "major=$major" >> "$GITHUB_OUTPUT"; fi
+        env:
+          TAG: ${{ steps.release.outputs.tag_name }}
+
+  image:
+    needs: [test, release]
+    if: |
+      always()
+      && needs.test.result == 'success'
+      && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags and labels
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/location-scout
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=long
+            type=ref,event=branch
+            type=raw,value=${{ needs.release.outputs.version }},enable=${{ needs.release.outputs.released == 'true' }}
+            type=raw,value=${{ needs.release.outputs.minor }},enable=${{ needs.release.outputs.released == 'true' }}
+            type=raw,value=${{ needs.release.outputs.major }},enable=${{ needs.release.outputs.major != '' }}
+
+      - name: Build and push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ github.event.repository.updated_at }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

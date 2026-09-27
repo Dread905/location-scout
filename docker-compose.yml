@@ -1,0 +1,40 @@
+# `docker compose pull && docker compose up -d`, then open http://localhost:3003
+services:
+  app:
+    image: ghcr.io/kapsikkum/location-scout:latest
+    build: .
+    environment:
+      API_PORT: "3003"
+      # private: every route needs a login. public: anonymous GETs see public spots only.
+      INSTANCE_MODE: ${INSTANCE_MODE:-private}
+      # Seeds a user called "admin" with this password on first boot, when no
+      # user exists yet — an alternative to the first-run wizard.
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      # Behind a reverse proxy (Caddy, nginx, Traefik), set this to the number
+      # of proxies in front, usually 1.
+      TRUST_PROXY: ${TRUST_PROXY:-}
+      # TfNSW Open Data key, for the trains feed (phase 3).
+      TFNSW_API_KEY: ${TFNSW_API_KEY:-}
+      # This app's existing event-scout instance, for nearby events and busyness.
+      EVENT_SCOUT_URL: ${EVENT_SCOUT_URL:-}
+      # adsb.lol by default; point at airplanes.live if preferred (phase 3).
+      ADSB_URL: ${ADSB_URL:-https://api.adsb.lol}
+      TZ: ${TZ:-Australia/Sydney}
+    # Makes host.docker.internal resolve on Linux, where it otherwise does not.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "3003:3003"
+    volumes:
+      - location-scout-data:/app/data
+    healthcheck:
+      # slim images have no curl; a one-line fetch does the job.
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3003/api/version').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  location-scout-data:

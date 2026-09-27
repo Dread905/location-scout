@@ -1,0 +1,15 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "location-scout",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
+      "cwd": "C:\\Users\\kapsikkum\\OneDrive - kapsikkum\\code\\location-scout",
+      "port": 5174
+    }
+  ]
+}

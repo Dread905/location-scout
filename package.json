@@ -1,0 +1,20 @@
+{
+  "name": "location-scout",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Self-hosted map of favourite photography spots and when the light works",
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,web -c blue,magenta \"npm run dev -w server\" \"npm run dev -w web\"",
+    "build": "npm run build -w web && npm run build -w server",
+    "start": "npm run start -w server",
+    "typecheck": "npx tsc --noEmit -p server/tsconfig.test.json && npx tsc --noEmit -p web",
+    "test": "npm test --workspace server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
