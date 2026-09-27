@@ -72,12 +72,46 @@ export function buildingShadows(features: Footprint[], sunAz: number, sunAlt: nu
     }
   }
   if (!shadows.length) return { type: 'FeatureCollection', features: [] };
-  let coordinates: Pt[][][];
-  try {
-    coordinates = difference(union(shadows[0], ...shadows.slice(1)), ...footprints) as Pt[][][];
-  } catch {
-    coordinates = shadows as Pt[][][]; // degenerate input: separate hulls beat no shadows at all
+  // Union only hulls that can touch: group by overlapping bounding boxes (union-find), then union and cut
+  // each group on its own with just the footprints inside its bbox. Same result as one global union, but
+  // polyclip's sweep stays small instead of growing with every building on screen.
+  const bb = shadows.map((g) => bbox(g[0] as Pt[]));
+  const fb = footprints.map((g) => bbox(g[0] as Pt[]));
+  const parent = shadows.map((_, i) => i);
+  const find = (i: number): number => { while (parent[i] !== i) i = parent[i] = parent[parent[i]]; return i; };
+  const order = bb.map((_, i) => i).sort((a, b) => bb[a][0] - bb[b][0]);
+  const active: number[] = [];
+  for (const i of order) {
+    let k = 0;
+    for (const j of active) {
+      if (bb[j][2] < bb[i][0]) continue; // swept past
+      active[k++] = j;
+      if (overlaps(bb[i], bb[j])) parent[find(i)] = find(j);
+    }
+    active.length = k;
+    active.push(i);
+  }
+  const groups = new Map<number, number[]>();
+  shadows.forEach((_, i) => { const r = find(i); const g = groups.get(r); if (g) g.push(i); else groups.set(r, [i]); });
+  const coordinates: Pt[][][] = [];
+  for (const idx of groups.values()) {
+    const box = idx.reduce<Box>((a, i) => [Math.min(a[0], bb[i][0]), Math.min(a[1], bb[i][1]), Math.max(a[2], bb[i][2]), Math.max(a[3], bb[i][3])] as Box, [Infinity, Infinity, -Infinity, -Infinity]);
+    const cut = footprints.filter((_, j) => overlaps(box, fb[j]));
+    try {
+      const u = idx.length === 1 ? shadows[idx[0]] : union(shadows[idx[0]], ...idx.slice(1).map((i) => shadows[i]));
+      coordinates.push(...(cut.length ? difference(u, ...cut) : idx.length === 1 ? [u] : u) as Pt[][][]);
+    } catch {
+      coordinates.push(...idx.map((i) => shadows[i] as Pt[][])); // degenerate input: separate hulls beat no shadows at all
+    }
   }
   if (!coordinates.length) return { type: 'FeatureCollection', features: [] };
   return { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'MultiPolygon', coordinates } }] };
 }
+
+type Box = [number, number, number, number];
+function bbox(ring: Pt[]): Box {
+  const b: Box = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const [x, y] of ring) { if (x < b[0]) b[0] = x; if (y < b[1]) b[1] = y; if (x > b[2]) b[2] = x; if (y > b[3]) b[3] = y; }
+  return b;
+}
+const overlaps = (a: Box, b: Box) => a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3];

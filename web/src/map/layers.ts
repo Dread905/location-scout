@@ -1,8 +1,9 @@
 /** MapLibre sources and layers: base extras (imagery, DEM), light (mood, rays, shadows) and our places/spots. */
-import { GeoJSONSource, Map as MlMap } from 'maplibre-gl';
+import { GeoJSONSource, Map as MlMap, type LightSpecification } from 'maplibre-gl';
 import type { Place, Spot } from '../api.js';
 import { destination, wedge } from './geo.js';
-import { buildingShadows, MIN_SHADOW_ALT } from './shadows.js';
+import { buildingShadows, MIN_SHADOW_ALT, type Footprint } from './shadows.js';
+import type { ShadowJob } from './shadows.worker.js';
 
 const SHADOW_COLOR = '#0a0c1a';
 import { altitudeM, pitchBlend, planeLabel, planeShadowPos } from './planes3d.js';
@@ -280,27 +281,37 @@ export function setTerrain3d(map: MlMap, on: boolean) {
 }
 
 /** Hillshade light from the sun, and a tint that follows its altitude. */
+/** setPaintProperty only when the value changed: each call re-evaluates the layer and forces a repaint. */
+function paint(map: MlMap, layer: string, prop: Parameters<MlMap["setPaintProperty"]>[1], value: string | number) {
+  if (!map.getLayer(layer)) return map.setPaintProperty(layer, prop, value); // keep the original error path
+  if (JSON.stringify(map.getPaintProperty(layer, prop)) === JSON.stringify(value)) return;
+  map.setPaintProperty(layer, prop, value);
+}
+
+const lastLight = new WeakMap<MlMap, string>();
 export function updateMood(map: MlMap, sun: { azimuth: number; altitude: number }) {
   const up = sun.altitude > 0;
-  map.setPaintProperty('hillshade', 'hillshade-illumination-direction', sun.azimuth);
-  map.setPaintProperty('hillshade', 'hillshade-illumination-altitude', Math.min(90, Math.max(2, sun.altitude)));
-  map.setPaintProperty('hillshade', 'hillshade-exaggeration', up ? 0.55 : 0.25);
-  map.setPaintProperty('hillshade', 'hillshade-highlight-color', up ? (sun.altitude < 8 ? 'rgba(255,190,120,0.55)' : 'rgba(255,255,255,0.4)') : 'rgba(0,0,0,0)');
-  map.setPaintProperty('hillshade', 'hillshade-shadow-color', up ? 'rgba(20,20,40,0.2)' : 'rgba(0,0,10,0.5)');
+  paint(map, 'hillshade', 'hillshade-illumination-direction', sun.azimuth);
+  paint(map, 'hillshade', 'hillshade-illumination-altitude', Math.min(90, Math.max(2, sun.altitude)));
+  paint(map, 'hillshade', 'hillshade-exaggeration', up ? 0.55 : 0.25);
+  paint(map, 'hillshade', 'hillshade-highlight-color', up ? (sun.altitude < 8 ? 'rgba(255,190,120,0.55)' : 'rgba(255,255,255,0.4)') : 'rgba(0,0,0,0)');
+  paint(map, 'hillshade', 'hillshade-shadow-color', up ? 'rgba(20,20,40,0.2)' : 'rgba(0,0,10,0.5)');
   const mood = moodAt(sun.altitude);
-  map.setPaintProperty('mood', 'fill-color', mood.color);
-  map.setPaintProperty('mood', 'fill-opacity', mood.opacity);
-  map.setPaintProperty('imagery', 'raster-brightness-max', Math.max(0.35, 1 - mood.opacity * 0.9));
+  paint(map, 'mood', 'fill-color', mood.color);
+  paint(map, 'mood', 'fill-opacity', mood.opacity);
+  paint(map, 'imagery', 'raster-brightness-max', Math.max(0.35, 1 - mood.opacity * 0.9));
   // 3D buildings: lit from the sun's direction, warm near the horizon, dim and flat at night.
-  map.setLight({
+  const light: LightSpecification = {
     anchor: 'map',
     position: [1.5, sun.azimuth, 90 - Math.min(88, Math.max(10, sun.altitude))],
     color: !up ? '#6a7090' : sun.altitude < 8 ? '#ffc58a' : '#ffffff',
     intensity: up ? 0.5 : 0.15,
-  });
+  };
+  const lk = JSON.stringify(light);
+  if (lastLight.get(map) !== lk) { lastLight.set(map, lk); map.setLight(light); }
   const shade = up ? (sun.altitude < 8 ? '#cbbfb3' : '#d9d6d0') : '#2a2e3d';
   for (const id of buildingLayerIds(map)) {
-    if (map.getLayer(id)?.type === 'fill-extrusion') map.setPaintProperty(id, 'fill-extrusion-color', shade);
+    if (map.getLayer(id)?.type === 'fill-extrusion') paint(map, id, 'fill-extrusion-color', shade);
   }
 }
 
@@ -331,17 +342,44 @@ export function updateShadows(map: MlMap, sun: { azimuth: number; altitude: numb
     if (up) setTerrainShadowSun(map, sun);
     map.setLayoutProperty('terrain-shadow', 'visibility', up && !hiddenLayers.has('terrain-shadow') ? 'visible' : 'none');
   }
-  if (map.getZoom() < SHADOW_ZOOM || sun.altitude <= 0) return setData(map, 'shadows', empty());
+  if (map.getZoom() < SHADOW_ZOOM || sun.altitude <= 0) {
+    const st = shadowState.get(map);
+    if (st) { st.key = ''; st.id++; }
+    return setData(map, 'shadows', empty());
+  }
   const layers = buildingLayerIds(map).filter((id) => map.getLayer(id));
   if (!layers.length) return;
   const seen = new Set<string>();
-  const features = map.queryRenderedFeatures({ layers }).filter((f) => {
+  const features: Footprint[] = [];
+  for (const f of map.queryRenderedFeatures({ layers })) {
     const key = `${f.id}:${JSON.stringify((f.geometry as GeoJSON.Polygon).coordinates?.[0]?.[0])}`;
-    if (seen.has(key)) return false;
+    if (seen.has(key)) continue;
     seen.add(key);
-    return true;
-  });
-  setData(map, 'shadows', buildingShadows(features, sun.azimuth, sun.altitude));
+    features.push({ geometry: f.geometry, properties: f.properties });
+  }
+  // Nothing changed (same buildings, sun within 0.1°): skip the polygon work entirely.
+  const key = `${sun.azimuth.toFixed(1)}|${sun.altitude.toFixed(1)}|${[...seen].sort().join(',')}`;
+  const st = shadowState.get(map) ?? { key: '', id: 0 };
+  shadowState.set(map, st);
+  if (key === st.key) return;
+  st.key = key;
+  const id = ++st.id;
+  const w = shadowWorker();
+  if (!w) return setData(map, 'shadows', buildingShadows(features, sun.azimuth, sun.altitude));
+  w.onmessage = (e: MessageEvent<{ id: number; fc: GeoJSON.FeatureCollection }>) => {
+    const cur = shadowState.get(map);
+    if (cur && e.data.id === cur.id && map.getSource('shadows')) setData(map, 'shadows', e.data.fc);
+  };
+  w.postMessage({ id, features, az: sun.azimuth, alt: sun.altitude } satisfies ShadowJob);
+}
+
+const shadowState = new WeakMap<MlMap, { key: string; id: number }>();
+let worker: Worker | null | undefined;
+/** One worker for building shadows; the latest request wins (older results are dropped by id). */
+function shadowWorker(): Worker | null {
+  if (worker !== undefined) return worker;
+  try { worker = new Worker(new URL('./shadows.worker.ts', import.meta.url), { type: 'module' }); } catch { worker = null; }
+  return worker;
 }
 
 /** Places and spots into their sources. `good` marks spots good at map time; `selectedId` highlights one. */

@@ -64,5 +64,5 @@ export function setTerrainShadowSun(map: MlMap, sun: { azimuth: number; altitude
   const apply = () => {
     (map.getSource('terrain-shadow') as RasterTileSource | undefined)?.setTiles(tiles);
   };
-  if (first) apply(); else st.timer = setTimeout(apply, 250);
+  if (first) apply(); else st.timer = setTimeout(apply, 400);
 }
