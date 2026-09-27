@@ -7,9 +7,9 @@ import { buildingShadows, MIN_SHADOW_ALT, type Footprint } from './shadows.js';
 import type { ShadowJob } from './shadows.worker.js';
 
 const SHADOW_COLOR = '#0a0c1a';
-import { altitudeM, pitchBlend, planeLabel, planeShadowPos } from './planes3d.js';
+import { altitudeM, pitchBlend, planeLabel, planeShadowPos, zoomBlend } from './planes3d.js';
 import { Planes3dLayer } from './planes3dLayer.js';
-import { Trains3dLayer, type Train3d } from './trains3dLayer.js';
+import { Trains3dLayer, trainsNo3d, type Train3d } from './trains3dLayer.js';
 import { registerTerrainShadowProtocol, setBuildingShadows, setTerrainShadowSun, setTerrainShadowTerrain, SHADOW_RASTER_MAX_Z } from './terrainShadowSource.js';
 import { RADAR_MAX_NATIVE_Z } from './weather.js';
 import { moodAt, moonPos, sunPos, sunriseSunset } from './sun.js';
@@ -210,6 +210,9 @@ export function initFeedLayers(map: MlMap) {
   map.addLayer(trains3d, 'trains');
   if (map.getLayer('trains-3d')) map.setLayoutProperty('trains-3d', 'visibility', 'none');
   map.on('pitch', () => applyTrainPitch(map));
+  map.on('zoom', () => applyTrainPitch(map));
+  // Terrain arriving lets trains that were waiting on it go 3D.
+  map.on('sourcedata', (e) => { if (e.sourceId === 'terrain' && e.isSourceLoaded) map.triggerRepaint(); });
   applyTrainPitch(map);
 
   // Nearby list hover: a ring around the hovered plane or train.
@@ -303,14 +306,16 @@ export function setTrains3d(trains: Train3d[]) { trains3d?.setTrains(trains); }
 /** Fade the flat train markers out as the 3D carriages fade in (they stay clickable at opacity 0). */
 export function applyTrainPitch(map: MlMap) {
   if (!map.getLayer('trains')) return;
-  const k = 1 - pitchBlend(map.getPitch());
-  map.setPaintProperty('trains', 'circle-opacity', ['case', ['==', ['get', 'status'], 'live'], k, 0.25 * k]);
-  map.setPaintProperty('trains', 'circle-stroke-opacity', k);
+  // Flat markers fade out as the 3D chains fade in; a train still waiting on terrain height stays flat.
+  const k = 1 - pitchBlend(map.getPitch()) * zoomBlend(map.getZoom());
+  const op = ['case', ['get', 'no3d'], 1, k] as unknown as number;
+  map.setPaintProperty('trains', 'circle-opacity', ['case', ['==', ['get', 'status'], 'live'], op, ['*', 0.25, op]]);
+  map.setPaintProperty('trains', 'circle-stroke-opacity', op);
 }
 
 export function updateTrains(map: MlMap, positions: { tripId: string; route: string; headsign: string; status: string; delaySec: number; lat: number; lng: number }[]) {
   setData(map, 'trains', { type: 'FeatureCollection', features: positions.map((p) => ({
-    type: 'Feature', properties: { id: p.tripId, route: p.route, headsign: p.headsign, status: p.status, delaySec: p.delaySec }, geometry: { type: 'Point', coordinates: [p.lng, p.lat] },
+    type: 'Feature', properties: { id: p.tripId, route: p.route, headsign: p.headsign, status: p.status, delaySec: p.delaySec, no3d: trainsNo3d.has(p.tripId) }, geometry: { type: 'Point', coordinates: [p.lng, p.lat] },
   })) });
 }
 

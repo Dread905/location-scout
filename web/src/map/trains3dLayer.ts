@@ -4,16 +4,20 @@
  */
 import { MercatorCoordinate, type CustomLayerInterface, type CustomRenderMethodInput, type Map as MlMap } from 'maplibre-gl';
 import { colourProgram, drawColoured, translated } from './planes3dLayer.js';
-import { pitchBlend } from './planes3d.js';
+import { pitchBlend, zoomBlend } from './planes3d.js';
 import { boxTriangles, CAR_HEIGHT_M, CAR_LEN_M, CAR_WIDTH_M, placeCarriages } from './trains3d.js';
 
 export interface Train3d {
-  lng: number; lat: number; bearing: number | null; live: boolean; carriages: number;
+  id: string; lng: number; lat: number; bearing: number | null; live: boolean; carriages: number;
   path?: [number, number][]; pathKm?: number;
 }
 
-/** A carriage is drawn at least this long on screen (pixels), so trains stay visible zoomed out. */
-const MIN_CAR_PX = 7;
+/** Carriages are widened (never lengthened) to at least this many pixels, up to 2x, so they stay legible. */
+const MIN_CAR_W_PX = 4;
+const LIFT_M = 0.5; // off the ground, so boxes don't z-fight the terrain
+
+/** Trains with no terrain height yet: drawn flat by the marker layer until their terrain loads. */
+export const trainsNo3d = new Set<string>();
 const LIVE: [number, number, number, number] = [0.13, 0.77, 0.37, 1]; // #22c55e, as the flat live marker
 const LIVE_NOSE: [number, number, number, number] = [0.94, 0.99, 0.96, 1];
 const SCHED: [number, number, number, number] = [0.54, 0.58, 0.65, 0.55]; // #8a93a6, see-through like the hollow ring
@@ -27,7 +31,9 @@ export class Trains3dLayer implements CustomLayerInterface {
   private buf?: WebGLBuffer;
   private trains: Train3d[] = [];
 
-  setTrains(trains: Train3d[]) { this.trains = trains; if (this.map && pitchBlend(this.map.getPitch()) > 0.001) this.map.triggerRepaint(); }
+  setTrains(trains: Train3d[]) { this.trains = trains; if (this.map && this.alpha() > 0.001) this.map.triggerRepaint(); }
+
+  private alpha() { return this.map ? pitchBlend(this.map.getPitch()) * zoomBlend(this.map.getZoom()) : 0; }
 
   onAdd(map: MlMap, gl: WebGLRenderingContext | WebGL2RenderingContext) {
     this.map = map;
@@ -43,14 +49,14 @@ export class Trains3dLayer implements CustomLayerInterface {
   render(gl: WebGLRenderingContext | WebGL2RenderingContext, args: CustomRenderMethodInput) {
     const map = this.map;
     if (!map || !this.prog || !this.trains.length) return;
-    const alpha = pitchBlend(map.getPitch());
+    const alpha = this.alpha();
     if (alpha <= 0.001) return;
 
     const c = map.getCenter();
     const origin = MercatorCoordinate.fromLngLat(c, 0);
     const o: [number, number, number] = [origin.x, origin.y, 0];
     const mpp = (156_543.03 * Math.cos((c.lat * Math.PI) / 180)) / 2 ** map.getZoom();
-    const scale = Math.max(1, (MIN_CAR_PX * mpp) / CAR_LEN_M);
+    const widen = Math.min(2, Math.max(1, (MIN_CAR_W_PX * mpp) / CAR_WIDTH_M));
     const unit = origin.meterInMercatorCoordinateUnits();
     const terrain = !!map.getTerrain();
     const bounds = map.getBounds();
@@ -58,18 +64,20 @@ export class Trains3dLayer implements CustomLayerInterface {
     const padLat = (bounds.getNorth() - bounds.getSouth()) * 0.2;
 
     const tris: number[] = [];
+    const no3d = new Set<string>();
     for (const t of this.trains) {
       if (t.lng < bounds.getWest() - padLng || t.lng > bounds.getEast() + padLng || t.lat < bounds.getSouth() - padLat || t.lat > bounds.getNorth() + padLat) continue;
-      const cars = placeCarriages({ path: t.path, headKm: t.pathKm, head: [t.lng, t.lat], bearing: t.bearing }, t.carriages, scale);
+      if (terrain && map.queryTerrainElevation([t.lng, t.lat]) == null) { no3d.add(t.id); continue; }
+      const cars = placeCarriages({ path: t.path, headKm: t.pathKm, head: [t.lng, t.lat], bearing: t.bearing }, t.carriages);
       const base = t.live ? LIVE : SCHED;
       cars.forEach((car, i) => {
         const f = MercatorCoordinate.fromLngLat(car.front, 0);
         const r = MercatorCoordinate.fromLngLat(car.rear, 0);
-        const zf = terrain ? (map.queryTerrainElevation(car.front) ?? 0) : 0;
-        const zr = terrain ? (map.queryTerrainElevation(car.rear) ?? 0) : 0;
+        const zf = (terrain ? (map.queryTerrainElevation(car.front) ?? 0) : 0) + LIFT_M;
+        const zr = (terrain ? (map.queryTerrainElevation(car.rear) ?? 0) : 0) + LIFT_M;
         // Local metres relative to the origin: x east, y north (mercator y grows south).
         const toM = (m: MercatorCoordinate): [number, number] => [(m.x - o[0]) / unit, -(m.y - o[1]) / unit];
-        const box = boxTriangles(toM(r), toM(f), CAR_WIDTH_M * scale, CAR_HEIGHT_M * Math.min(scale, 4), zr, zf);
+        const box = boxTriangles(toM(r), toM(f), CAR_WIDTH_M * widen, CAR_HEIGHT_M * widen, zr, zf);
         const col = i === 0 && t.live ? LIVE_NOSE : base;
         for (const { p, shade } of box) {
           // Lead car's roof carries the nose colour; everything else the service colour.
@@ -78,6 +86,9 @@ export class Trains3dLayer implements CustomLayerInterface {
         }
       });
     }
+
+    trainsNo3d.clear();
+    for (const id of no3d) trainsNo3d.add(id);
 
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);

@@ -209,7 +209,7 @@ export default function MapPage({ user }: { user: User | null }) {
         const moved = trains.map((t) => ({ t, pose: trainMotion.current.pose(t.tripId, now) }));
         updateTrains(map, moved.map(({ t, pose }) => (pose ? { ...t, lat: pose.lat, lng: pose.lng } : t)));
         setTrains3d(moved.map(({ t, pose }) => ({
-          lng: pose?.lng ?? t.lng, lat: pose?.lat ?? t.lat, bearing: pose?.bearing ?? t.bearing ?? null, live: t.status === 'live',
+          id: t.tripId, lng: pose?.lng ?? t.lng, lat: pose?.lat ?? t.lat, bearing: pose?.bearing ?? t.bearing ?? null, live: t.status === 'live',
           carriages: carriageCount(t), ...(pose?.path ? { path: pose.path, pathKm: pose.pathKm } : { path: byId.get(t.tripId)?.path, pathKm: t.pathAtKm }),
         })));
       }
