@@ -459,3 +459,10 @@ input[type='checkbox'], input[type='radio'] { width: auto; accent-color: var(--a
 .followpill button:hover { background: var(--panel-hover); }
 .popup-follow { margin-top: 6px; font-size: 12px; padding: 2px 10px; border-radius: 999px; border: 1px solid #f5a623; background: none; color: #b36b00; cursor: pointer; }
 .nearby__section li .nearby__row { flex: 1; min-width: 0; width: auto; }
+
+/* Settings tabs */
+fieldset.bare { border: 0; padding: 0; margin: 0; }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: 0 0 16px; overflow-x: auto; scrollbar-width: none; }
+.tab { background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 8px 12px; color: var(--muted); white-space: nowrap; cursor: pointer; }
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }

@@ -18,6 +18,11 @@ export default function Settings({ user }: { user: User | null }) {
   const [keyInput, setKeyInput] = useState('');
   const [keyBusy, setKeyBusy] = useState(false);
   const [keyMsg, setKeyMsg] = useState('');
+  const [tab, setTabState] = useState<Tab>(() => {
+    const h = window.location.hash.slice(1) as Tab;
+    return TABS.some((t) => t.id === h) ? h : 'home';
+  });
+  const setTab = (t: Tab) => { setTabState(t); history.replaceState(null, '', `#${t}`); };
 
   useEffect(() => { api.settings().then(setDraft).catch((err) => setError((err as Error).message)); }, []);
   useEffect(() => { api.trainsStatus().then(setTrains).catch(() => {}); }, []);
@@ -82,9 +87,14 @@ export default function Settings({ user }: { user: User | null }) {
   return (
     <div className="page settings">
       <h1>Settings</h1>
+      <div className="tabs" role="tablist">
+        {TABS.filter((t) => isAdmin || !t.admin).map((t) => (
+          <button key={t.id} role="tab" aria-selected={tab === t.id} className={`tab${tab === t.id ? ' active' : ''}`} onClick={() => setTab(t.id)}>{t.label}</button>
+        ))}
+      </div>
       {!isAdmin && <div className="banner">Only an admin can change these.</div>}
-      <fieldset disabled={!isAdmin} style={{ border: 0, padding: 0, margin: 0 }}>
-        <section>
+      <fieldset disabled={!isAdmin} className="bare">
+        {tab === 'home' && <section>
           <h2>📍 Home</h2>
           <p className="hint">The map opens here, and feeds and the Plan shoot page search around it. Powered by OpenStreetMap geocoding.</p>
           <div className="formrow">
@@ -124,9 +134,9 @@ export default function Settings({ user }: { user: User | null }) {
               <button onClick={() => set({ areas: draft.areas.filter((_, j) => j !== i) })}>✕</button>
             </div>
           ))}
-        </section>
+        </section>}
 
-        <section>
+        {tab === 'instance' && <section>
           <h2>🔗 Instance</h2>
           <div className="formrow"><label>Event Scout URL</label>
             <input value={draft.eventScoutUrl} placeholder="http://event-scout:3001" onChange={(e) => { set({ eventScoutUrl: e.target.value }); setScoutTest(null); }} />
@@ -139,7 +149,11 @@ export default function Settings({ user }: { user: User | null }) {
           <div className="formrow"><label>Private remotes</label>
             <input type="checkbox" checked={draft.allowPrivateRemotes} onChange={(e) => set({ allowPrivateRemotes: e.target.checked })} />
             <span className="hint">Let remotes resolve to LAN addresses.</span></div>
-          <div className="formrow" style={{ marginTop: 8 }}><label>TfNSW trains</label>
+        </section>}
+
+        {tab === 'feeds' && <section>
+          <h2>🚆 Trains</h2>
+          <div className="formrow"><label>TfNSW trains</label>
             {trains ? (
               <span className={`status-line ${trains.configured ? 'ok' : ''}`}>
                 {trains.configured ? '●' : '○'} {trains.configured ? `configured · ${trains.tripCount} trips imported` : 'not configured'}
@@ -164,22 +178,30 @@ export default function Settings({ user }: { user: User | null }) {
               </p>
             </>
           )}
-        </section>
-
+        </section>}
       </fieldset>
 
-      {isAdmin && (
+      {isAdmin && (tab === 'home' || tab === 'instance') && (
         <div className="savebar">
           <button className="primary" onClick={() => void save()} disabled={!dirty}>Save</button>
           <span className="note">{error ? <span className="status-line error">{error}</span> : saved ? 'Saved.' : dirty ? 'Unsaved changes.' : ''}</span>
         </div>
       )}
 
-      {isAdmin && <Tasks />}
-      {isAdmin && <Users me={user!} />}
+      {isAdmin && tab === 'tasks' && <Tasks />}
+      {isAdmin && tab === 'users' && <Users me={user!} />}
     </div>
   );
 }
+
+type Tab = 'home' | 'instance' | 'feeds' | 'tasks' | 'users';
+const TABS: { id: Tab; label: string; admin?: boolean }[] = [
+  { id: 'home', label: 'Home & areas' },
+  { id: 'instance', label: 'Instance' },
+  { id: 'feeds', label: 'Trains' },
+  { id: 'tasks', label: 'Tasks', admin: true },
+  { id: 'users', label: 'Users', admin: true },
+];
 
 function Tasks() {
   const [tasks, setTasks] = useState<TaskStatus[]>([]);
