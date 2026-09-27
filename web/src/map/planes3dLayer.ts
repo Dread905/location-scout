@@ -23,11 +23,43 @@ const FIN: [number, number, number, number] = [0.4, 0.46, 0.66, 1];
 const LINE: [number, number, number, number] = [0.87, 0.9, 1, 0.55];
 
 /** m * translate(o): lets the vertices be small offsets from `o`, so float32 keeps precision at high zoom. */
-function translated(m: ArrayLike<number>, o: [number, number, number]): Float32Array {
+export function translated(m: ArrayLike<number>, o: [number, number, number]): Float32Array {
   const r = new Float32Array(16);
   for (let i = 0; i < 12; i++) r[i] = m[i];
   for (let row = 0; row < 4; row++) r[12 + row] = m[row] * o[0] + m[4 + row] * o[1] + m[8 + row] * o[2] + m[12 + row];
   return r;
+}
+
+/** The shared colour-per-vertex program (a_pos vec3, a_color vec4, u_matrix, u_alpha); also used by trains3dLayer. */
+export function colourProgram(gl: WebGLRenderingContext | WebGL2RenderingContext): WebGLProgram {
+  const sh = (type: number, s: string) => { const x = gl.createShader(type)!; gl.shaderSource(x, s); gl.compileShader(x); return x; };
+  const p = gl.createProgram()!;
+  gl.attachShader(p, sh(gl.VERTEX_SHADER, VS));
+  gl.attachShader(p, sh(gl.FRAGMENT_SHADER, FS));
+  gl.linkProgram(p);
+  return p;
+}
+
+/** Draw interleaved [x, y, z, r, g, b, a] vertex lists with the colour program. */
+export function drawColoured(
+  gl: WebGLRenderingContext | WebGL2RenderingContext, prog: WebGLProgram, buf: WebGLBuffer, matrix: Float32Array, alpha: number,
+  batches: readonly (readonly [number[], number])[],
+) {
+  gl.useProgram(prog);
+  gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'u_matrix'), false, matrix);
+  gl.uniform1f(gl.getUniformLocation(prog, 'u_alpha'), alpha);
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  const aPos = gl.getAttribLocation(prog, 'a_pos');
+  const aCol = gl.getAttribLocation(prog, 'a_color');
+  gl.enableVertexAttribArray(aPos);
+  gl.enableVertexAttribArray(aCol);
+  for (const [data, mode] of batches) {
+    if (!data.length) continue;
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.DYNAMIC_DRAW);
+    gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 28, 0);
+    gl.vertexAttribPointer(aCol, 4, gl.FLOAT, false, 28, 12);
+    gl.drawArrays(mode, 0, data.length / 7);
+  }
 }
 
 export class Planes3dLayer implements CustomLayerInterface {
@@ -43,12 +75,7 @@ export class Planes3dLayer implements CustomLayerInterface {
 
   onAdd(map: MlMap, gl: WebGLRenderingContext | WebGL2RenderingContext) {
     this.map = map;
-    const sh = (type: number, s: string) => { const x = gl.createShader(type)!; gl.shaderSource(x, s); gl.compileShader(x); return x; };
-    const p = gl.createProgram()!;
-    gl.attachShader(p, sh(gl.VERTEX_SHADER, VS));
-    gl.attachShader(p, sh(gl.FRAGMENT_SHADER, FS));
-    gl.linkProgram(p);
-    this.prog = p;
+    this.prog = colourProgram(gl);
     this.buf = gl.createBuffer()!;
   }
 
@@ -87,23 +114,10 @@ export class Planes3dLayer implements CustomLayerInterface {
       push(lines, g.x, g.y, g.z, LINE);
     }
 
-    gl.useProgram(this.prog);
-    gl.uniformMatrix4fv(gl.getUniformLocation(this.prog, 'u_matrix'), false, translated(args.defaultProjectionData.mainMatrix, o));
-    gl.uniform1f(gl.getUniformLocation(this.prog, 'u_alpha'), alpha);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.buf!);
-    const aPos = gl.getAttribLocation(this.prog, 'a_pos');
-    const aCol = gl.getAttribLocation(this.prog, 'a_color');
-    gl.enableVertexAttribArray(aPos);
-    gl.enableVertexAttribArray(aCol);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.disable(gl.CULL_FACE);
     gl.disable(gl.DEPTH_TEST); // always drawn over terrain: planes are in the sky, and the depth range is MapLibre's
-    for (const [data, mode] of [[lines, gl.LINES], [tris, gl.TRIANGLES]] as const) {
-      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.DYNAMIC_DRAW);
-      gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 28, 0);
-      gl.vertexAttribPointer(aCol, 4, gl.FLOAT, false, 28, 12);
-      gl.drawArrays(mode, 0, data.length / 7);
-    }
+    drawColoured(gl, this.prog, this.buf!, translated(args.defaultProjectionData.mainMatrix, o), alpha, [[lines, gl.LINES], [tris, gl.TRIANGLES]]);
   }
 }

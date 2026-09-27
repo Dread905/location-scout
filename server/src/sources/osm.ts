@@ -101,3 +101,35 @@ export async function runCandidatesTask(db: Db, areas: RailArea[], log: TaskLog)
   log(`${rows.length} candidates upserted`);
   return { ok: true, message: `${rows.length} candidates` };
 }
+
+// --- building footprints (Plan shoot's building shadows) ------------------------------
+
+interface OverpassBuildingWay { type: 'way'; id: number; geometry?: { lat: number; lon: number }[]; tags?: Record<string, string> }
+export const BUILDING_LEVEL_M = 3;
+export interface BuildingFeature { type: 'Feature'; id: number; properties: { height?: number }; geometry: { type: 'Polygon'; coordinates: number[][][] } }
+export interface BuildingCollection { type: 'FeatureCollection'; features: BuildingFeature[] }
+
+/** Overpass `out geom` building ways to GeoJSON footprints with a numeric `height` (tag, else levels × 3 m, else none). */
+export function buildingsFromOverpass(elements: OverpassBuildingWay[]): BuildingCollection {
+  const features: BuildingFeature[] = [];
+  for (const el of elements) {
+    if (el.type !== 'way' || !el.geometry || el.geometry.length < 4) continue;
+    const ring = el.geometry.map((p) => [p.lon, p.lat]);
+    const [a, b] = [ring[0], ring[ring.length - 1]];
+    if (a[0] !== b[0] || a[1] !== b[1]) ring.push(a);
+    const t = el.tags ?? {};
+    const h = parseFloat(t.height ?? '');
+    const levels = parseFloat(t['building:levels'] ?? '');
+    const height = Number.isFinite(h) ? h : Number.isFinite(levels) ? levels * BUILDING_LEVEL_M : undefined;
+    features.push({ type: 'Feature', id: el.id, properties: height != null ? { height } : {}, geometry: { type: 'Polygon', coordinates: [ring] } });
+  }
+  return { type: 'FeatureCollection', features };
+}
+
+/** Building footprints within `radiusM` of a point, from Overpass. */
+export async function fetchBuildings(lat: number, lng: number, radiusM: number): Promise<BuildingCollection> {
+  const r = Math.round(Math.min(1000, Math.max(50, radiusM)));
+  const q = `[out:json][timeout:20];way["building"](around:${r},${lat},${lng});out geom tags;`;
+  const data = await overpassFetch(q) as unknown as { elements: OverpassBuildingWay[] };
+  return buildingsFromOverpass(data.elements);
+}

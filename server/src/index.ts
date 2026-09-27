@@ -18,6 +18,7 @@ import { geocode } from './geocode.js';
 import { bboxFromRadius, haversine, parseBbox, parseLatLng } from './geo.js';
 import { parseGoodTimes, GoodTimesError, DEFAULT_GOOD_TIMES } from './goodTimes.js';
 import { fetchPlanes } from './feeds/planes.js';
+import { fetchBuildings } from './sources/osm.js';
 import {
   combinedFeedData, combinedRealtime, nextPasses, predictTrainPositions, tripCount, TRAIN_FEEDS,
 } from './feeds/trains.js';
@@ -646,6 +647,17 @@ app.get('/api/planes', async (req, res, next) => {
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return res.status(400).json({ error: 'lat and lng are required' });
     const baseUrl = process.env.ADSB_URL ?? 'https://api.adsb.lol';
     res.json(await fetchPlanes(baseUrl, lat, lng, nm));
+  } catch (err) { next(err); }
+});
+
+// Building footprints around a point, for Plan shoot's building shadows (the page has no map to read vector tiles from).
+app.get('/api/buildings', async (req, res, next) => {
+  try {
+    const lat = Number(req.query.lat);
+    const lng = Number(req.query.lng);
+    const r = Number(req.query.r ?? 250);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return res.status(400).json({ error: 'lat and lng are required' });
+    res.json(await fetchBuildings(lat, lng, Number.isFinite(r) ? r : 250));
   } catch (err) { next(err); }
 });
 

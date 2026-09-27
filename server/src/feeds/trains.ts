@@ -57,9 +57,15 @@ export function isServiceActiveOn(cal: CalendarRow, dateYmd: string, jsWeekday: 
 export interface GtfsStop extends LatLng { id: string; name: string }
 export interface ShapePoint extends LatLng { }
 export interface StopTimeRow { stopId: string; seq: number; arrivalSec: number; departureSec: number }
-export interface TripRow { id: string; routeId: string; serviceId: string; shapeId: string; headsign: string }
+export interface TripRow { id: string; routeId: string; serviceId: string; shapeId: string; headsign: string; feed?: TrainFeedName }
 export interface RouteRow { id: string; shortName: string; longName: string }
-export interface RealtimeEntry { tripId: string; delaySec: number; vehicleLat?: number; vehicleLng?: number }
+export interface RealtimeEntry {
+  tripId: string; delaySec: number; vehicleLat?: number; vehicleLng?: number;
+  /** Realtime compass bearing (degrees) and speed (m/s), when the feed gives them. */
+  bearing?: number; speedMps?: number;
+  /** Carriage count from GTFS-realtime multi_carriage_details, when present. */
+  carriages?: number; feed?: TrainFeedName;
+}
 
 export interface TrainsFeedData {
   routes: Map<string, RouteRow>;
@@ -88,7 +94,76 @@ export function mergeFeedData(a: TrainsFeedData, b: TrainsFeedData): TrainsFeedD
 export interface TrainPosition {
   tripId: string; routeId: string; route: string; headsign: string;
   lat: number; lng: number; status: 'live' | 'scheduled'; delaySec: number;
+  /** Compass bearing of travel (realtime, else the shape's direction), degrees; null when unknown. */
+  bearing: number | null;
+  /** Speed along the line, m/s (realtime, else the scheduled segment speed; 0 while dwelling); null when unknown. */
+  speedMps: number | null;
+  /** Carriages in the consist when the realtime feed says; else null (the client picks a default). */
+  carriages: number | null;
+  network: TrainFeedName | null;
+  /** A slice of the trip's shape around the train ([lng, lat]), for moving it along the track and drawing carriages. */
+  path?: [number, number][];
+  /** Where the train is along `path`, km from its start. */
+  pathAtKm?: number;
 }
+
+// --- pure: a slice of the shape around a train --------------------------------------
+
+const DEG_KM = 111.32;
+/** Cumulative km along a [lng, lat] polyline (local equirectangular; fine at rail-corridor scale). */
+export function cumulativeKm(coords: [number, number][]): number[] {
+  const out = [0];
+  for (let i = 1; i < coords.length; i++) {
+    const [lng0, lat0] = coords[i - 1];
+    const [lng1, lat1] = coords[i];
+    const k = Math.cos((((lat0 + lat1) / 2) * Math.PI) / 180);
+    out.push(out[i - 1] + Math.hypot((lng1 - lng0) * DEG_KM * k, (lat1 - lat0) * DEG_KM));
+  }
+  return out;
+}
+
+/** Compass bearing (degrees) from a to b, [lng, lat]. */
+export function bearingDeg(a: [number, number], b: [number, number]): number {
+  const k = Math.cos((((a[1] + b[1]) / 2) * Math.PI) / 180);
+  const deg = (Math.atan2((b[0] - a[0]) * k, b[1] - a[1]) * 180) / Math.PI;
+  return (deg + 360) % 360;
+}
+
+const round5 = (v: number) => Math.round(v * 1e5) / 1e5;
+
+/**
+ * The part of a polyline from `atKm - backKm` to `atKm + aheadKm` (clamped to the line), with the ends and the
+ * train's own point interpolated in; `atKm` is re-based to the slice's start, and `bearing` is the line's direction there.
+ */
+export function shapeSlice(coords: [number, number][], atKm: number, backKm: number, aheadKm: number): { path: [number, number][]; atKm: number; bearing: number | null } | null {
+  if (coords.length < 2) return null;
+  const cum = cumulativeKm(coords);
+  const total = cum.at(-1)!;
+  const at = Math.max(0, Math.min(total, atKm));
+  const from = Math.max(0, at - backKm);
+  const to = Math.min(total, at + aheadKm);
+  const pointAt = (km: number): [number, number] => {
+    let i = 1;
+    while (i < cum.length - 1 && cum[i] < km) i++;
+    const t = cum[i] === cum[i - 1] ? 0 : (km - cum[i - 1]) / (cum[i] - cum[i - 1]);
+    const [a, b] = [coords[i - 1], coords[i]];
+    return [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
+  };
+  const path: [number, number][] = [pointAt(from)];
+  for (let i = 0; i < coords.length; i++) if (cum[i] > from && cum[i] < to) path.push(coords[i]);
+  path.push(pointAt(to));
+  // Direction at the train: the segment it sits on (or the last one at the very end).
+  let j = 1;
+  while (j < cum.length - 1 && cum[j] <= at) j++;
+  const bearing = cum[j] > cum[j - 1] ? bearingDeg(coords[j - 1], coords[j]) : null;
+  return { path: path.map(([x, y]) => [round5(x), round5(y)] as [number, number]), atKm: at - from, bearing };
+}
+
+/** Shape kept behind (for carriages) and ahead (for moving between polls) of each train. */
+export const PATH_BACK_KM = 0.6;
+export const PATH_AHEAD_KM = 2.5;
+/** A live vehicle further than this from its trip's shape isn't given a path. */
+const MAX_OFF_SHAPE_KM = 0.3;
 
 function bracket(stopTimes: StopTimeRow[], nowSec: number, delaySec: number): { i: number; frac: number } | null {
   const first = stopTimes[0].departureSec + delaySec;
@@ -138,18 +213,32 @@ export function predictTrainPositions(feed: TrainsFeedData, at: Date, realtime: 
 
     const coords: [number, number][] = shape.map((p) => [p.lng, p.lat]);
     let lat: number; let lng: number; let status: 'live' | 'scheduled' = 'scheduled';
+    const stopA = feed.stopsById.get(stopTimes[br.i - 1].stopId);
+    const stopB = feed.stopsById.get(stopTimes[br.i].stopId);
+    const distA = stopA ? (projectOntoLine(coords, stopA)?.atKm ?? 0) : 0;
+    const distB = stopB ? (projectOntoLine(coords, stopB)?.atKm ?? distA) : distA;
+    const segSec = stopTimes[br.i].arrivalSec - stopTimes[br.i - 1].departureSec;
+    // Scheduled speed over this stop-to-stop run; a train still dwelling (frac 0) is standing.
+    let speedMps: number | null = segSec > 0 && br.frac > 0 ? (Math.abs(distB - distA) * 1000) / segSec : segSec > 0 ? 0 : null;
+    let atKm: number | null;
     if (rt?.vehicleLat != null && rt?.vehicleLng != null) {
       lat = rt.vehicleLat; lng = rt.vehicleLng; status = 'live';
+      const proj = projectOntoLine(coords, { lat, lng });
+      atKm = proj && proj.offKm <= MAX_OFF_SHAPE_KM ? proj.atKm : null;
+      if (rt.speedMps != null) speedMps = rt.speedMps;
     } else {
-      const stopA = feed.stopsById.get(stopTimes[br.i - 1].stopId);
-      const stopB = feed.stopsById.get(stopTimes[br.i].stopId);
-      const distA = stopA ? (projectOntoLine(coords, stopA)?.atKm ?? 0) : 0;
-      const distB = stopB ? (projectOntoLine(coords, stopB)?.atKm ?? distA) : distA;
-      const pos = pointAtDistanceOnLine(coords, distA + br.frac * (distB - distA));
+      atKm = distA + br.frac * (distB - distA);
+      const pos = pointAtDistanceOnLine(coords, atKm);
       lat = pos.lat; lng = pos.lng;
     }
+    const slice = atKm != null ? shapeSlice(coords, atKm, PATH_BACK_KM, PATH_AHEAD_KM) : null;
+    const bearing = rt?.bearing ?? slice?.bearing ?? null;
     const route = feed.routes.get(trip.routeId);
-    out.push({ tripId: trip.id, routeId: trip.routeId, route: route?.shortName ?? route?.longName ?? '', headsign: trip.headsign, lat, lng, status, delaySec });
+    out.push({
+      tripId: trip.id, routeId: trip.routeId, route: route?.shortName ?? route?.longName ?? '', headsign: trip.headsign, lat, lng, status, delaySec,
+      bearing, speedMps, carriages: rt?.carriages ?? null, network: trip.feed ?? rt?.feed ?? null,
+      ...(slice ? { path: slice.path, pathAtKm: slice.atKm } : {}),
+    });
   }
 
   const seen = new Set(out.map((p) => p.tripId));
@@ -162,6 +251,7 @@ export function predictTrainPositions(feed: TrainsFeedData, at: Date, realtime: 
     out.push({
       tripId: rt.tripId, routeId: trip?.routeId ?? '', route: route?.shortName || route?.longName || '', headsign: trip?.headsign ?? '',
       lat: rt.vehicleLat, lng: rt.vehicleLng, status: 'live', delaySec: rt.delaySec,
+      bearing: rt.bearing ?? null, speedMps: rt.speedMps ?? null, carriages: rt.carriages ?? null, network: trip?.feed ?? rt.feed ?? null,
     });
   }
   return out;
@@ -319,7 +409,7 @@ export function loadFeedData(db: Db, feedName: TrainFeedName): TrainsFeedData {
     data.routes.set(r.route_id, { id: r.route_id, shortName: r.short_name, longName: r.long_name });
   }
   for (const t of db.handle.prepare('SELECT * FROM gtfs_trips WHERE feed = ?').all(feedName) as any[]) {
-    data.trips.push({ id: t.trip_id, routeId: t.route_id, serviceId: t.service_id, shapeId: t.shape_id, headsign: t.headsign });
+    data.trips.push({ id: t.trip_id, routeId: t.route_id, serviceId: t.service_id, shapeId: t.shape_id, headsign: t.headsign, feed: feedName });
   }
   for (const s of db.handle.prepare('SELECT * FROM gtfs_stops WHERE feed = ?').all(feedName) as any[]) {
     data.stopsById.set(s.stop_id, { id: s.stop_id, name: s.name, lat: s.lat, lng: s.lng });
@@ -365,15 +455,32 @@ async function fetchRealtimeFeed(feedName: TrainFeedName, apiKey: string): Promi
     const tripId = e.tripUpdate?.trip?.tripId;
     if (!tripId) continue;
     const delaySec = e.tripUpdate?.delay ?? e.tripUpdate?.stopTimeUpdate?.[0]?.arrival?.delay ?? 0;
-    byTrip.set(tripId, { tripId, delaySec });
+    byTrip.set(tripId, { tripId, delaySec, feed: feedName });
   }
   for (const e of vp?.entity ?? []) {
     const tripId = e.vehicle?.trip?.tripId;
     if (!tripId) continue;
-    const existing = byTrip.get(tripId) ?? { tripId, delaySec: 0 };
-    byTrip.set(tripId, { ...existing, vehicleLat: e.vehicle?.position?.latitude, vehicleLng: e.vehicle?.position?.longitude });
+    const existing = byTrip.get(tripId) ?? { tripId, delaySec: 0, feed: feedName };
+    byTrip.set(tripId, { ...existing, vehicleLat: e.vehicle?.position?.latitude, vehicleLng: e.vehicle?.position?.longitude, ...vehicleExtras(e.vehicle) });
   }
   return [...byTrip.values()];
+}
+
+/**
+ * Bearing, speed and carriage count from a GTFS-realtime VehiclePosition. Protobuf decodes absent floats as 0, so a
+ * bearing and speed of exactly 0 together are treated as "not given". TfNSW's own consist extension (field 1007) isn't
+ * decoded by gtfs-realtime-bindings; the standard multi_carriage_details is used when a feed fills it in.
+ */
+export function vehicleExtras(v: { position?: { bearing?: number | null; speed?: number | null } | null; multiCarriageDetails?: unknown[] | null } | null | undefined): Pick<RealtimeEntry, 'bearing' | 'speedMps' | 'carriages'> {
+  const out: Pick<RealtimeEntry, 'bearing' | 'speedMps' | 'carriages'> = {};
+  const b = v?.position?.bearing;
+  const sp = v?.position?.speed;
+  const given = !(b === 0 && (sp == null || sp === 0));
+  if (typeof b === 'number' && Number.isFinite(b) && given) out.bearing = ((b % 360) + 360) % 360;
+  if (typeof sp === 'number' && Number.isFinite(sp) && sp >= 0 && given) out.speedMps = sp;
+  const n = v?.multiCarriageDetails?.length ?? 0;
+  if (n > 0) out.carriages = n;
+  return out;
 }
 
 export async function realtimeCached(feedName: TrainFeedName, apiKey: string): Promise<RealtimeEntry[]> {

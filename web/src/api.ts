@@ -120,7 +120,11 @@ export interface Plane { hex: string; flight: string; lat: number; lon: number; 
 
 export interface RailFeature extends GeoJSON.Feature { properties: { id: string; kind: 'rail' | 'industrial' | 'mine' | 'works'; usage?: string; service?: string; name?: string } }
 
-export interface TrainPosition { tripId: string; routeId: string; route: string; headsign: string; lat: number; lng: number; status: 'live' | 'scheduled'; delaySec: number }
+export interface TrainPosition {
+  tripId: string; routeId: string; route: string; headsign: string; lat: number; lng: number; status: 'live' | 'scheduled'; delaySec: number;
+  bearing?: number | null; speedMps?: number | null; carriages?: number | null; network?: 'sydneytrains' | 'nswtrains' | null;
+  path?: [number, number][]; pathAtKm?: number;
+}
 export interface TrainPass { tripId: string; routeId: string; route: string; headsign: string; at: string }
 export interface TrainsStatus { configured: boolean; lastImport: string | null; tripCount: number }
 
@@ -260,6 +264,7 @@ export const api = {
 
   // --- planes ---
   planes: (lat: number, lng: number, nm = 40) => fetch(`/api/planes?lat=${lat}&lng=${lng}&nm=${nm}`).then((r) => json<Plane[]>(r)),
+  buildings: (lat: number, lng: number, r = 250) => fetch(`/api/buildings?lat=${lat}&lng=${lng}&r=${r}`).then((r) => json<GeoJSON.FeatureCollection>(r)),
 
   // --- rail ---
   rail: () => fetch('/api/rail').then((r) => json<GeoJSON.FeatureCollection>(r)),

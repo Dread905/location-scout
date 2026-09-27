@@ -8,7 +8,8 @@ import type { ShadowJob } from './shadows.worker.js';
 const SHADOW_COLOR = '#0a0c1a';
 import { altitudeM, pitchBlend, planeLabel, planeShadowPos } from './planes3d.js';
 import { Planes3dLayer } from './planes3dLayer.js';
-import { registerTerrainShadowProtocol, setTerrainShadowSun, TERRAIN_SHADOW_MAX_DEM_Z } from './terrainShadowSource.js';
+import { Trains3dLayer, type Train3d } from './trains3dLayer.js';
+import { registerTerrainShadowProtocol, setBuildingShadows, setTerrainShadowSun, setTerrainShadowTerrain, SHADOW_RASTER_MAX_Z } from './terrainShadowSource.js';
 import { moodAt, moonPos, sunPos, sunriseSunset } from './sun.js';
 
 export const STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
@@ -53,14 +54,15 @@ export function initLayers(map: MlMap) {
   }, firstRoad);
 
   map.addSource('shadows', { type: 'geojson', data: empty() });
-  // Cast terrain shadows (ray-marched in workers) plus slopes facing away from the sun, as one mask in the
-  // building-shadow tone. Tiles start empty-sun and follow updateShadows.
+  // One shadow raster: cast terrain shadows (ray-marched in workers), slopes facing away from the sun, and building
+  // shadows rasterised into the same mask, so overlaps never darken twice. Tiles start empty-sun and follow updateShadows.
+  // The 'shadows' fill stays (invisible) as the Building shadows legend handle and the polygons' GeoJSON home.
   registerTerrainShadowProtocol(SHADOW_COLOR);
   map.addSource('terrain-shadow', { type: 'raster', tiles: ['terrainshadow://{z}/{x}/{y}?az=180&alt=45'], tileSize: 256,
-    minzoom: 9, maxzoom: TERRAIN_SHADOW_MAX_DEM_Z });
+    minzoom: 9, maxzoom: SHADOW_RASTER_MAX_Z });
   map.addLayer({ id: 'terrain-shadow', type: 'raster', source: 'terrain-shadow', minzoom: 9, layout: { visibility: 'none' },
     paint: { 'raster-opacity': 0.3, 'raster-fade-duration': 0, 'raster-resampling': 'linear' } }, firstBuilding);
-  map.addLayer({ id: 'shadows', type: 'fill', source: 'shadows', paint: { 'fill-color': SHADOW_COLOR, 'fill-opacity': 0.3 } }, firstBuilding);
+  map.addLayer({ id: 'shadows', type: 'fill', source: 'shadows', paint: { 'fill-color': SHADOW_COLOR, 'fill-opacity': 0 } }, firstBuilding);
 
   map.addSource('mood', { type: 'geojson', data: { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[[-180, -85], [180, -85], [180, 85], [-180, 85], [-180, -85]]] } } });
   map.addLayer({ id: 'mood', type: 'fill', source: 'mood', paint: { 'fill-color': '#000', 'fill-opacity': 0, 'fill-antialias': false } }, firstSymbol);
@@ -182,6 +184,12 @@ export function initFeedLayers(map: MlMap) {
     'circle-stroke-color': ['case', ['==', ['get', 'status'], 'live'], '#f0fdf4', '#8a93a6'],
     'circle-stroke-width': ['case', ['==', ['get', 'status'], 'live'], 2, 1.5],
   } });
+  // 3D trains (pitched view): box carriages along the track; cross-fade with the flat markers (applyTrainPitch).
+  trains3d = new Trains3dLayer();
+  map.addLayer(trains3d, 'trains');
+  if (map.getLayer('trains-3d')) map.setLayoutProperty('trains-3d', 'visibility', 'none');
+  map.on('pitch', () => applyTrainPitch(map));
+  applyTrainPitch(map);
 
   // Nearby list hover: a ring around the hovered plane or train.
   map.addSource('nearby-hl', { type: 'geojson', data: empty() });
@@ -203,6 +211,7 @@ export function setLayerVisible(map: MlMap, layerIds: string[], on: boolean) {
     if (on) hiddenLayers.delete(id); else hiddenLayers.add(id);
     if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
   }
+  if (layerIds.includes('terrain-shadow') || layerIds.includes('shadows')) syncShadowRaster(map);
 }
 
 export function updateRail(map: MlMap, fc: GeoJSON.FeatureCollection) {
@@ -230,13 +239,17 @@ export function updatePlanes(
   ghosts: { hex: string; lat: number; lon: number }[],
   sun?: { azimuth: number; altitude: number },
 ) {
-  setData(map, 'planes', { type: 'FeatureCollection', features: planes.map((p) => ({
-    type: 'Feature', properties: { id: p.hex, track: p.track ?? 0 }, geometry: { type: 'Point', coordinates: [p.lon, p.lat] },
-  })) });
   setData(map, 'planes-proj', { type: 'FeatureCollection',
     features: projections.map((p) => ({ type: 'Feature', properties: { id: p.hex }, geometry: { type: 'LineString', coordinates: p.coords } })) });
   setData(map, 'planes-ghost', { type: 'FeatureCollection', features: ghosts.map((g) => ({ type: 'Feature', properties: { id: g.hex }, geometry: { type: 'Point', coordinates: [g.lon, g.lat] } })) });
+  updatePlanePositions(map, planes, sun);
+}
 
+/** The parts of the planes layers that move with each plane: marker, 3D marker, label and shadow (called per animation frame). */
+export function updatePlanePositions(map: MlMap, planes: PlaneIn[], sun?: { azimuth: number; altitude: number }) {
+  setData(map, 'planes', { type: 'FeatureCollection', features: planes.map((p) => ({
+    type: 'Feature', properties: { id: p.hex, track: p.track ?? 0 }, geometry: { type: 'Point', coordinates: [p.lon, p.lat] },
+  })) });
   // 3D: planes with a known altitude. Shadow from the sun at map time (none at night).
   const withAlt = planes.map((p) => ({ p, alt: altitudeM(p.alt_baro) }));
   planes3d?.setPlanes(withAlt.filter((x) => x.alt != null).map(({ p, alt }) => ({ lng: p.lon, lat: p.lat, altM: alt!, track: p.track ?? 0 })));
@@ -250,6 +263,19 @@ export function updatePlanes(
     if (pos) shadows.push({ type: 'Feature', properties: { id: p.hex, track: p.track ?? 0 }, geometry: { type: 'Point', coordinates: pos } });
   }
   setData(map, 'planes-shadow', { type: 'FeatureCollection', features: shadows });
+}
+
+/** Every layer under the legend's Trains toggle. */
+export const TRAIN_LAYERS = ['trains', 'trains-3d'];
+let trains3d: Trains3dLayer | null = null;
+export function setTrains3d(trains: Train3d[]) { trains3d?.setTrains(trains); }
+
+/** Fade the flat train markers out as the 3D carriages fade in (they stay clickable at opacity 0). */
+export function applyTrainPitch(map: MlMap) {
+  if (!map.getLayer('trains')) return;
+  const k = 1 - pitchBlend(map.getPitch());
+  map.setPaintProperty('trains', 'circle-opacity', ['case', ['==', ['get', 'status'], 'live'], k, 0.25 * k]);
+  map.setPaintProperty('trains', 'circle-stroke-opacity', k);
 }
 
 export function updateTrains(map: MlMap, positions: { tripId: string; route: string; headsign: string; status: string; delaySec: number; lat: number; lng: number }[]) {
@@ -337,14 +363,13 @@ export function updateRays(map: MlMap, origin: { lat: number; lng: number }, tim
 
 /** Building shadows for what's on screen, cleared when zoomed out or the sun is down; terrain shadow follows the sun and fades out at night. */
 export function updateShadows(map: MlMap, sun: { azimuth: number; altitude: number }) {
-  if (map.getLayer('terrain-shadow')) {
-    const up = sun.altitude > 0;
-    if (up) setTerrainShadowSun(map, sun);
-    map.setLayoutProperty('terrain-shadow', 'visibility', up && !hiddenLayers.has('terrain-shadow') ? 'visible' : 'none');
-  }
+  lastSun.set(map, sun);
+  if (sun.altitude > 0) setTerrainShadowSun(map, sun);
+  syncShadowRaster(map);
   if (map.getZoom() < SHADOW_ZOOM || sun.altitude <= 0) {
     const st = shadowState.get(map);
-    if (st) { st.key = ''; st.id++; }
+    if (st) { st.key = ''; st.id++; st.fc = null; }
+    setBuildingShadows(map, null);
     return setData(map, 'shadows', empty());
   }
   const layers = buildingLayerIds(map).filter((id) => map.getLayer(id));
@@ -359,21 +384,37 @@ export function updateShadows(map: MlMap, sun: { azimuth: number; altitude: numb
   }
   // Nothing changed (same buildings, sun within 0.1°): skip the polygon work entirely.
   const key = `${sun.azimuth.toFixed(1)}|${sun.altitude.toFixed(1)}|${[...seen].sort().join(',')}`;
-  const st = shadowState.get(map) ?? { key: '', id: 0 };
+  const st = shadowState.get(map) ?? { key: '', id: 0, fc: null };
   shadowState.set(map, st);
   if (key === st.key) return;
   st.key = key;
   const id = ++st.id;
   const w = shadowWorker();
-  if (!w) return setData(map, 'shadows', buildingShadows(features, sun.azimuth, sun.altitude));
+  const done = (fc: FC) => {
+    st.fc = fc;
+    setData(map, 'shadows', fc);
+    setBuildingShadows(map, hiddenLayers.has('shadows') ? null : fc);
+  };
+  if (!w) return done(buildingShadows(features, sun.azimuth, sun.altitude));
   w.onmessage = (e: MessageEvent<{ id: number; fc: GeoJSON.FeatureCollection }>) => {
     const cur = shadowState.get(map);
-    if (cur && e.data.id === cur.id && map.getSource('shadows')) setData(map, 'shadows', e.data.fc);
+    if (cur && e.data.id === cur.id && map.getSource('shadows')) done(e.data.fc);
   };
   w.postMessage({ id, features, az: sun.azimuth, alt: sun.altitude } satisfies ShadowJob);
 }
 
-const shadowState = new WeakMap<MlMap, { key: string; id: number }>();
+const shadowState = new WeakMap<MlMap, { key: string; id: number; fc: FC | null }>();
+const lastSun = new WeakMap<MlMap, { azimuth: number; altitude: number }>();
+
+/** The shadow raster carries both legend toggles: shown while the sun is up and either part is on. */
+function syncShadowRaster(map: MlMap) {
+  if (!map.getLayer('terrain-shadow')) return;
+  const up = (lastSun.get(map)?.altitude ?? 0) > 0;
+  const terrainOn = !hiddenLayers.has('terrain-shadow'), buildingsOn = !hiddenLayers.has('shadows');
+  setTerrainShadowTerrain(map, terrainOn);
+  setBuildingShadows(map, buildingsOn ? shadowState.get(map)?.fc ?? null : null);
+  map.setLayoutProperty('terrain-shadow', 'visibility', up && (terrainOn || buildingsOn) ? 'visible' : 'none');
+}
 let worker: Worker | null | undefined;
 /** One worker for building shadows; the latest request wins (older results are dropped by id). */
 function shadowWorker(): Worker | null {

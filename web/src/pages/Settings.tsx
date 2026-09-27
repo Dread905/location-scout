@@ -86,7 +86,7 @@ export default function Settings({ user }: { user: User | null }) {
       <fieldset disabled={!isAdmin} style={{ border: 0, padding: 0, margin: 0 }}>
         <section>
           <h2>📍 Home</h2>
-          <p className="hint">The map opens here, and feeds and the trip planner search around it. Powered by OpenStreetMap geocoding.</p>
+          <p className="hint">The map opens here, and feeds and the Plan shoot page search around it. Powered by OpenStreetMap geocoding.</p>
           <div className="formrow">
             <label>City / area</label>
             <input value={geoQuery} placeholder="e.g. Bathurst NSW" onChange={(e) => setGeoQuery(e.target.value)}

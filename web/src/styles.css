@@ -346,7 +346,7 @@ input[type='checkbox'], input[type='radio'] { width: auto; accent-color: var(--a
 .lightbox__nav--prev { left: 14px; }
 .lightbox__nav--next { right: 14px; }
 
-/* ── Place page, trip planner, tables ── */
+/* ── Place page, Plan shoot page, tables ── */
 .placehead { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
 .spotgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; margin-top: 14px; }
 .spotcard { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; display: flex; flex-direction: column; gap: 6px; }
@@ -441,3 +441,21 @@ input[type='checkbox'], input[type='radio'] { width: auto; accent-color: var(--a
   .nearby--open { left: 10px; }
   .nearby__panel { width: 100%; max-height: 40dvh; }
 }
+.shootday { margin: 12px 0 20px; }
+.shootday .daystrip__row { margin-top: 3px; }
+.shootday__windows li { margin: 2px 0; }
+
+/* Follow mode: per-row Follow button in the Nearby list, and the pill on the map */
+.nearby__section li { display: flex; align-items: center; gap: 4px; }
+.nearby__follow { flex: none; font-size: 11px; padding: 2px 8px; border-radius: var(--pill); background: none; border: 1px solid var(--border);
+  color: var(--muted); cursor: pointer; }
+.nearby__follow:hover, .nearby__follow.active { color: var(--accent); border-color: var(--accent); }
+.followpill { position: absolute; top: 96px; left: 50%; transform: translateX(-50%); z-index: 6; display: flex; align-items: center; gap: 8px;
+  background: var(--panel); border: 1px solid var(--accent); color: var(--text); border-radius: var(--pill); padding: 4px 6px 4px 14px; font-size: 13px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35); max-width: calc(100vw - 32px); }
+.followpill strong { color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.followpill label { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; cursor: pointer; }
+.followpill button { background: none; border: none; color: var(--text); font-size: 14px; cursor: pointer; padding: 2px 8px; border-radius: var(--pill); }
+.followpill button:hover { background: var(--panel-hover); }
+.popup-follow { margin-top: 6px; font-size: 12px; padding: 2px 10px; border-radius: 999px; border: 1px solid #f5a623; background: none; color: #b36b00; cursor: pointer; }
+.nearby__section li .nearby__row { flex: 1; min-width: 0; width: auto; }
