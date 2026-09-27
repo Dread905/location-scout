@@ -3,13 +3,14 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { GeoJSONSource, LngLatBounds, Map as MlMap, MapMouseEvent, NavigationControl, Popup, ScaleControl, setWorkerUrl } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
-import { api, Candidate, Place, Spot, User } from '../api.js';
+import { api, Candidate, Place, Plane, Spot, TrainPosition, User } from '../api.js';
 import {
   CLICKABLE, initFeedLayers, initLayers, PLANE_LAYERS, setImagery, setLayerVisible, setTerrain3d, STYLE_URL, updateCandidates, updateDraft,
-  updateMood, updatePlacesAndSpots, updatePlanes, updateRail, updateRays, updateShadows, updateTrains, updateWedges,
+  updateMood, updatePlacesAndSpots, updatePlanes, updateRail, updateRays, setNearbyHighlight, updateShadows, updateTrains, updateWedges,
 } from '../map/layers.js';
 import { goodNow, sunPos } from '../map/sun.js';
 import { Legend } from '../components/Legend.js';
+import { NearbyList } from '../components/NearbyList.js';
 import { CATEGORIES, groupLayers, loadVisibility, saveVisibility, type Visibility } from '../map/legend.js';
 import { deadReckon } from '../map/planes.js';
 import { useMapTime } from '../time.js';
@@ -60,6 +61,8 @@ export default function MapPage({ user }: { user: User | null }) {
   const { planes: planesOn, rail: railOn, trains: trainsOn, candidates: candidatesOn, imagery } = vis;
   const [rail, setRail] = useState<GeoJSON.FeatureCollection | null>(null);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [planeData, setPlaneData] = useState<Plane[]>([]);
+  const [trainData, setTrainData] = useState<TrainPosition[]>([]);
 
   const canEdit = (ownerId: string) => !!user && (user.role === 'admin' || user.id === ownerId);
 
@@ -100,12 +103,13 @@ export default function MapPage({ user }: { user: User | null }) {
   useEffect(() => {
     if (!map) return;
     setLayerVisible(map, PLANE_LAYERS, planesOn);
-    if (!planesOn) return;
+    if (!planesOn) { setPlaneData([]); return; }
     let stop = false;
     const tick = () => {
       if (document.hidden) return;
       api.planes(centre.lat, centre.lng, 60).then((planes) => {
         if (stop) return;
+        setPlaneData(planes);
         const projections = planes.filter((p) => p.track != null && p.gs != null).map((p) => {
           const pts: [number, number][] = [[p.lon, p.lat]];
           for (let m2 = 3; m2 <= 15; m2 += 3) { const d = deadReckon(p, m2); if (d) pts.push([d.lon, d.lat]); }
@@ -127,11 +131,11 @@ export default function MapPage({ user }: { user: User | null }) {
   useEffect(() => {
     if (!map) return;
     setLayerVisible(map, ['trains'], trainsOn);
-    if (!trainsOn) { trainPopup.current?.remove(); return; }
+    if (!trainsOn) { trainPopup.current?.remove(); setTrainData([]); return; }
     let stop = false;
     const tick = () => {
       if (document.hidden) return;
-      api.trains().then((r) => { if (!stop) updateTrains(map, r.positions); }).catch(() => {});
+      api.trains().then((r) => { if (!stop) { updateTrains(map, r.positions); setTrainData(r.positions); } }).catch(() => {});
     };
     tick();
     const id = setInterval(tick, TRAINS_POLL_MS);
@@ -355,12 +359,21 @@ export default function MapPage({ user }: { user: User | null }) {
   const placeSpots = selectedPlace ? spots.filter((s) => s.placeId === selectedPlace.id) : [];
 
   return (
-    <div className="mapshell">
+    <div className={`mapshell${panelOpen ? ' mapshell--panel' : ''}`}>
       <div ref={container} className="mapshell__map" />
       {error && <div className="maptoast error">{error}</div>}
       {mode !== 'browse' && <div className="maptoast">{mode === 'pick-spot' ? 'Click the map to place the spot' : 'Click the map to add outline points'}</div>}
 
       <Legend map={map} vis={vis} onToggle={toggle} />
+      <NearbyList planes={planesOn ? planeData : null} trains={trainsOn ? trainData : null} centre={centre}
+        onHover={(at) => { if (map) setNearbyHighlight(map, at); }}
+        onPlane={(r) => { if (map) map.flyTo({ center: [r.lng, r.lat], zoom: Math.max(map.getZoom(), 11) }); }}
+        onTrain={(r) => {
+          if (!map) return;
+          map.flyTo({ center: [r.lng, r.lat], zoom: Math.max(map.getZoom(), 12) });
+          const t = trainData.find((x) => x.tripId === r.id);
+          if (t) showTrainPopup(map, { type: 'Feature', properties: { route: t.route, headsign: t.headsign, status: t.status, delaySec: t.delaySec }, geometry: { type: 'Point', coordinates: [t.lng, t.lat] } });
+        }} />
       <div className="maptools">
         <button className={`chip${goodOnly ? ' active' : ''}`} onClick={() => setGoodOnly(!goodOnly)} title="Only spots whose good times match the map time">Good now</button>
         <button className={`chip${imagery ? ' active' : ''}`} onClick={() => toggle('imagery')}>Satellite</button>

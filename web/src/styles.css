@@ -412,3 +412,32 @@ input[type='checkbox'], input[type='radio'] { width: auto; accent-color: var(--a
 .legend__swatch--text::after { content: 'Aa'; position: absolute; inset: -3px 0 0; font-size: 12px; font-weight: 700; text-align: center;
   color: var(--sw); -webkit-text-stroke: 0.3px var(--text); }
 @media (max-width: 820px) { .legend { bottom: 118px; } }
+
+/* ── Nearby planes/trains list (bottom-right; a bottom sheet on phones) ── */
+.nearby { position: absolute; right: 10px; bottom: 110px; z-index: 6; display: flex; flex-direction: column-reverse; align-items: flex-end; gap: 6px; max-width: calc(100% - 20px); pointer-events: none; }
+.nearby > * { pointer-events: auto; }
+.nearby > .chip { background: rgba(23, 26, 33, 0.92); backdrop-filter: blur(6px); }
+.nearby > .chip.active { background: #2b2412; }
+.nearby__panel { width: 300px; max-width: 100%; max-height: min(50vh, calc(100dvh - 330px)); overflow-y: auto; background: var(--glass);
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 4px 10px 10px; backdrop-filter: blur(6px); }
+.nearby__section h4 { margin: 10px 0 4px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; display: flex; align-items: center; gap: 6px; }
+.nearby__count { background: var(--accent-soft); color: var(--accent); border-radius: var(--pill); padding: 0 7px; font-size: 11px; letter-spacing: 0; }
+.nearby__section ul { list-style: none; margin: 0; padding: 0; }
+.nearby__row { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: none; border: 1px solid transparent; border-radius: var(--radius-xs);
+  padding: 5px 6px; color: var(--text); font-size: 13px; cursor: pointer; }
+.nearby__row:hover, .nearby__row:focus-visible { background: var(--panel-hover); border-color: var(--border-hover); }
+.nearby__main { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nearby__line { display: block; }
+.nearby__sub { color: var(--muted); font-size: 12px; }
+.nearby__dist { flex: none; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.nearby__arrow { flex: none; width: 16px; text-align: center; color: var(--blue); font-weight: 700; }
+.nearby__badge { font-size: 10.5px; border: 1px solid var(--muted); color: var(--muted); border-radius: var(--pill); padding: 0 6px; }
+.nearby__badge--live { border-color: var(--green); color: var(--green); }
+.nearby__empty { color: var(--muted); font-size: 12.5px; margin: 2px 0 6px; }
+.nearby__more { font-size: 12.5px; margin-top: 4px; }
+.mapshell--panel .nearby { display: none; }
+@media (max-width: 820px) {
+  .nearby { bottom: 118px; }
+  .nearby--open { left: 10px; }
+  .nearby__panel { width: 100%; max-height: 40dvh; }
+}

@@ -181,6 +181,12 @@ export function initFeedLayers(map: MlMap) {
     'circle-stroke-width': ['case', ['==', ['get', 'status'], 'live'], 2, 1.5],
   } });
 
+  // Nearby list hover: a ring around the hovered plane or train.
+  map.addSource('nearby-hl', { type: 'geojson', data: empty() });
+  map.addLayer({ id: 'nearby-hl', type: 'circle', source: 'nearby-hl', paint: {
+    'circle-radius': 14, 'circle-color': 'rgba(245, 166, 35, 0.2)', 'circle-stroke-color': '#f5a623', 'circle-stroke-width': 2.5,
+  } });
+
   // OSM candidates: muted, distinct from real spots.
   map.addSource('candidates', { type: 'geojson', data: empty() });
   map.addLayer({ id: 'candidates', type: 'circle', source: 'candidates', layout: { visibility: 'none' },
@@ -248,6 +254,11 @@ export function updateTrains(map: MlMap, positions: { tripId: string; route: str
   setData(map, 'trains', { type: 'FeatureCollection', features: positions.map((p) => ({
     type: 'Feature', properties: { id: p.tripId, route: p.route, headsign: p.headsign, status: p.status, delaySec: p.delaySec }, geometry: { type: 'Point', coordinates: [p.lng, p.lat] },
   })) });
+}
+
+/** Ring the marker hovered in the Nearby list; null clears it. */
+export function setNearbyHighlight(map: MlMap, at: [number, number] | null) {
+  setData(map, 'nearby-hl', { type: 'FeatureCollection', features: at ? [{ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: at } }] : [] });
 }
 
 export function updateCandidates(map: MlMap, candidates: { id: string; name: string; lat: number; lng: number }[]) {
