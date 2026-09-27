@@ -33,40 +33,69 @@ function toPlane(a: AdsbAircraft): Plane | null {
     lon: a.lon,
     track: typeof a.track === 'number' ? a.track : null,
     gs: typeof a.gs === 'number' ? a.gs : null,
-    alt_baro: typeof a.alt_baro === 'number' ? a.alt_baro : null,
+    alt_baro: a.alt_baro === 'ground' ? 0 : typeof a.alt_baro === 'number' ? a.alt_baro : null,
     t: a.t ?? '',
     seen: a.seen ?? 0,
   };
 }
 
 const FETCH_TIMEOUT_MS = 8000;
-const CACHE_TTL_MS = 10_000;
+const CACHE_TTL_MS = 15_000;
 const cache = new Map<string, { at: number; planes: Plane[] }>();
 
-/** Rounded to ~1km so nearby requests share a cache entry. */
+const GRID_DEG = 0.25; // ~25km: requests snap to this grid so panning reuses one upstream call
+const MIN_GAP_MS = 5_000; // never hit upstream more often than this, whatever the key
+let lastFetchAt = 0;
+let backoffUntil = 0;
+const inflight = new Map<string, Promise<Plane[]>>();
+
+const snap = (v: number) => Math.round(v / GRID_DEG) * GRID_DEG;
+
+/** Snapped to the grid, with the radius padded so the snapped circle still covers the asked-for one. */
 function cacheKey(lat: number, lng: number, nm: number): string {
-  return `${lat.toFixed(2)},${lng.toFixed(2)},${Math.round(nm)}`;
+  return `${snap(lat).toFixed(2)},${snap(lng).toFixed(2)},${Math.ceil((nm + 12) / 10) * 10}`;
+}
+
+/** Nearest cached result, however old — served while rate-limited or backing off rather than erroring. */
+function stale(key: string): Plane[] {
+  return cache.get(key)?.planes ?? [...cache.values()].sort((a, b) => b.at - a.at)[0]?.planes ?? [];
 }
 
 export async function fetchPlanes(baseUrl: string, lat: number, lng: number, nm: number): Promise<Plane[]> {
   const key = cacheKey(lat, lng, nm);
   const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.planes;
+  const now = Date.now();
+  if (hit && now - hit.at < CACHE_TTL_MS) return hit.planes;
+  if (now < backoffUntil || now - lastFetchAt < MIN_GAP_MS) return stale(key);
+  const pending = inflight.get(key);
+  if (pending) return pending;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const url = `${baseUrl.replace(/\/$/, '')}/v2/point/${lat}/${lng}/${Math.round(nm)}`;
-    // adsb.lol 403s a request with no User-Agent at all (Node's fetch sends none by default).
-    const res = await fetch(url, { headers: { 'User-Agent': 'location-scout/0.1 (local personal app)' }, signal: controller.signal });
-    if (!res.ok) throw new Error(`${url} returned ${res.status}`);
-    const data = (await res.json()) as { ac?: AdsbAircraft[] };
-    const planes = (data.ac ?? []).map(toPlane).filter((p): p is Plane => p !== null);
-    cache.set(key, { at: Date.now(), planes });
-    return planes;
-  } finally {
-    clearTimeout(timer);
-  }
+  const [sLat, sLng, sNm] = key.split(',').map(Number);
+  lastFetchAt = now;
+  const p = (async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const url = `${baseUrl.replace(/\/$/, '')}/v2/point/${sLat}/${sLng}/${sNm}`;
+      // adsb.lol 403s a request with no User-Agent at all (Node's fetch sends none by default).
+      const res = await fetch(url, { headers: { 'User-Agent': 'location-scout/0.1 (local personal app)' }, signal: controller.signal });
+      if (res.status === 429) {
+        const retry = Number(res.headers.get('retry-after'));
+        backoffUntil = Date.now() + (Number.isFinite(retry) && retry > 0 ? retry * 1000 : 60_000);
+        return stale(key);
+      }
+      if (!res.ok) throw new Error(`${url} returned ${res.status}`);
+      const data = (await res.json()) as { ac?: AdsbAircraft[] };
+      const planes = (data.ac ?? []).map(toPlane).filter((pl): pl is Plane => pl !== null);
+      cache.set(key, { at: Date.now(), planes });
+      return planes;
+    } finally {
+      clearTimeout(timer);
+      inflight.delete(key);
+    }
+  })();
+  inflight.set(key, p);
+  return p;
 }
 
 const KNOTS_TO_KMH = 1.852;
