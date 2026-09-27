@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
   workflow_dispatch:
 
@@ -28,13 +28,13 @@ jobs:
           npx tsc --noEmit -p server/tsconfig.test.json
           npx tsc --noEmit -p web
       - name: Unit tests
-        run: npm test --workspace server
+        run: npm test
       - name: Build
         run: npm run build
 
   release:
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -48,7 +48,8 @@ jobs:
       - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
         id: release
         with:
-          release-type: node
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
 
       - name: Work out the image tags
         id: semver
@@ -70,10 +71,8 @@ jobs:
 
   image:
     needs: [test, release]
-    if: |
-      always()
-      && needs.test.result == 'success'
-      && github.event_name != 'pull_request'
+    # PRs build (no push) so a broken Dockerfile shows up before merge.
+    if: always() && needs.test.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -81,9 +80,12 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      - uses: docker/setup-qemu-action@v3
+
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -99,6 +101,7 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,format=long
             type=ref,event=branch
+            type=ref,event=pr
             type=raw,value=${{ needs.release.outputs.version }},enable=${{ needs.release.outputs.released == 'true' }}
             type=raw,value=${{ needs.release.outputs.minor }},enable=${{ needs.release.outputs.released == 'true' }}
             type=raw,value=${{ needs.release.outputs.major }},enable=${{ needs.release.outputs.major != '' }}
@@ -108,12 +111,12 @@ jobs:
         with:
           context: .
           file: Dockerfile
-          platforms: linux/amd64
-          push: true
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             GIT_SHA=${{ github.sha }}
-            BUILD_TIME=${{ github.event.repository.updated_at }}
+            BUILD_TIME=${{ github.event.head_commit.timestamp || github.event.pull_request.updated_at }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
