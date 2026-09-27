@@ -1,13 +1,16 @@
+import { difference, union, type Geom } from 'polyclip-ts';
+
 /** Building shadow geometry. Pure: the map layer feeds it footprints from queryRenderedFeatures. */
 
 type Pt = [number, number];
 
-export const MIN_SHADOW_ALT = 2; // degrees; lower and shadows run off to infinity
+export const MIN_SHADOW_ALT = 5; // degrees; lower and shadows streak across the whole view
+export const MAX_SHADOW_M = 200; // metres; a hard cap on top of the altitude floor
 export const DEFAULT_HEIGHT = 6; // metres, for buildings with no height tag
 
-/** Shadow length in metres for a height and sun altitude, with the altitude floored at MIN_SHADOW_ALT. */
+/** Shadow length in metres for a height and sun altitude, with the altitude floored at MIN_SHADOW_ALT and the length capped at MAX_SHADOW_M. */
 export function shadowLength(heightM: number, altDeg: number): number {
-  return heightM / Math.tan((Math.max(altDeg, MIN_SHADOW_ALT) * Math.PI) / 180);
+  return Math.min(MAX_SHADOW_M, heightM / Math.tan((Math.max(altDeg, MIN_SHADOW_ALT) * Math.PI) / 180));
 }
 
 /** Convex hull (Andrew's monotone chain), returned as a closed ring. */
@@ -40,7 +43,7 @@ export function shadowOffset(lengthM: number, sunAz: number, lat: number): Pt {
 /** A footprint ring [lng, lat] and the shadow it casts, as a closed ring. */
 export function shadowPolygon(ring: Pt[], heightM: number, sunAz: number, sunAlt: number): Pt[] {
   const [dx, dy] = shadowOffset(shadowLength(heightM, sunAlt), sunAz, ring[0][1]);
-  // ponytail: convex hull only exact for convex footprints; polygon union if L-shapes look wrong
+  // Exact for convex footprints; buildingShadows cuts every footprint back out, so concave ones read right too.
   return convexHull([...ring, ...ring.map(([x, y]): Pt => [x + dx, y + dy])]);
 }
 
@@ -50,17 +53,31 @@ export interface Footprint {
   properties: Record<string, unknown> | null;
 }
 
-/** Shadows for building footprints (Polygon or MultiPolygon; outer rings only). */
+/**
+ * Shadows for building footprints (Polygon or MultiPolygon; outer rings only) as one MultiPolygon:
+ * every shadow unioned, so overlaps don't darken, then every footprint cut out, so a shadow stops at
+ * the base of the next building instead of running on beneath it.
+ */
 export function buildingShadows(features: Footprint[], sunAz: number, sunAlt: number): GeoJSON.FeatureCollection {
-  const out: GeoJSON.Feature[] = [];
+  const shadows: Geom[] = [];
+  const footprints: Geom[] = [];
   for (const f of features) {
     const h = Number(f.properties?.render_height ?? f.properties?.height ?? DEFAULT_HEIGHT) || DEFAULT_HEIGHT;
     const g = f.geometry;
     const polys = (g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : []) as Pt[][][];
     for (const poly of polys) {
-      if (!poly[0] || poly[0].length < 3) continue;
-      out.push({ type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [shadowPolygon(poly[0], h, sunAz, sunAlt)] } });
+      if (!poly[0] || poly[0].length < 4) continue;
+      shadows.push([shadowPolygon(poly[0], h, sunAz, sunAlt)]);
+      footprints.push([poly[0]]);
     }
   }
-  return { type: 'FeatureCollection', features: out };
+  if (!shadows.length) return { type: 'FeatureCollection', features: [] };
+  let coordinates: Pt[][][];
+  try {
+    coordinates = difference(union(shadows[0], ...shadows.slice(1)), ...footprints) as Pt[][][];
+  } catch {
+    coordinates = shadows as Pt[][][]; // degenerate input: separate hulls beat no shadows at all
+  }
+  if (!coordinates.length) return { type: 'FeatureCollection', features: [] };
+  return { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'MultiPolygon', coordinates } }] };
 }

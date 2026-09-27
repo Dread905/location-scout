@@ -1,28 +1,29 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { GeoJSONSource, LngLatBounds, Map as MlMap, MapMouseEvent, NavigationControl, ScaleControl, setWorkerUrl } from 'maplibre-gl';
+import { GeoJSONSource, LngLatBounds, Map as MlMap, MapMouseEvent, NavigationControl, Popup, ScaleControl, setWorkerUrl } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
-import { api, Candidate, Place, Settings, Sighting, Spot, User } from '../api.js';
+import { api, Candidate, Place, Plane, Spot, TrainPosition, User } from '../api.js';
 import {
-  CLICKABLE, initFeedLayers, initLayers, setImagery, setLayerVisible, setTerrain3d, STYLE_URL, updateCandidates, updateDraft,
-  updateMood, updatePlacesAndSpots, updatePlanes, updateRail, updateRays, updateShadows, updateSightings, updateTrains, updateWedges,
+  CLICKABLE, initFeedLayers, initLayers, PLANE_LAYERS, setImagery, setLayerVisible, setTerrain3d, STYLE_URL, updateCandidates, updateDraft,
+  updateMood, updatePlacesAndSpots, updatePlanes, updateRail, updateRays, setNearbyHighlight, updateShadows, updateTrains, updateWedges,
 } from '../map/layers.js';
 import { goodNow, sunPos } from '../map/sun.js';
+import { Legend } from '../components/Legend.js';
+import { NearbyList } from '../components/NearbyList.js';
+import { CATEGORIES, groupLayers, loadVisibility, saveVisibility, type Visibility } from '../map/legend.js';
 import { deadReckon } from '../map/planes.js';
-import { projectAlongLine } from '../map/freightProject.js';
 import { useMapTime } from '../time.js';
 import TimeBar from '../components/TimeBar.js';
 import SpotPanel from '../components/SpotPanel.js';
 import SpotEditor, { SpotDraft } from '../components/SpotEditor.js';
 import PlaceEditor, { draftToPlace, PlaceDraft, placeToDraft } from '../components/PlaceEditor.js';
 import { emptyGoodTimes } from '../components/GoodTimesEditor.js';
-import SightingForm, { SightingDraft } from '../components/SightingForm.js';
 import DayStrip from '../components/DayStrip.js';
 
 type Selection = { type: 'spot' | 'place' | 'candidate'; id: string } | null;
-type Editing = { type: 'spot'; draft: SpotDraft } | { type: 'place'; draft: PlaceDraft } | { type: 'sighting'; draft: SightingDraft } | null;
-const RECENT_SIGHTING_MIN = 90;
+type Editing = { type: 'spot'; draft: SpotDraft } | { type: 'place'; draft: PlaceDraft } | null;
+const TRAINS_POLL_MS = 20_000; // matches the server's realtime cache
 
 export const MAP_CENTRE_KEY = 'ls.mapCentre';
 
@@ -33,6 +34,9 @@ const newSpot = (lat: number, lng: number, placeId: string | null = null): SpotD
   name: '', notes: '', lat, lng, placeId, tags: [], facingDeg: null, fovDeg: null, goodTimes: emptyGoodTimes(), visibility: 'private',
 });
 
+/** Legend keys whose visibility is applied by their own effect below. */
+const FEED_KEYS = ['imagery', 'planes', 'rail', 'trains', 'candidates'];
+
 export default function MapPage({ user }: { user: User | null }) {
   const container = useRef<HTMLDivElement>(null);
   const [map, setMap] = useState<MlMap | null>(null);
@@ -42,7 +46,6 @@ export default function MapPage({ user }: { user: User | null }) {
   const [selected, setSelected] = useState<Selection>(null);
   const [editing, setEditing] = useState<Editing>(null);
   const [mode, setMode] = useState<'browse' | 'pick-spot' | 'draw'>('browse');
-  const [imagery, setImageryOn] = useState(false);
   const [terrain, setTerrainOn] = useState(false);
   const [goodOnly, setGoodOnly] = useState(false);
   const [centre, setCentre] = useState({ lat: -33.419, lng: 149.577 });
@@ -51,15 +54,15 @@ export default function MapPage({ user }: { user: User | null }) {
   const { time } = useMapTime();
 
   // Phase 3: live feeds, each behind its own toggle so nothing polls unasked.
-  const [settings, setSettings] = useState<Settings | null>(null);
-  const [planesOn, setPlanesOn] = useState(false);
-  const [railOn, setRailOn] = useState(false);
-  const [trainsOn, setTrainsOn] = useState(false);
-  const [freightOn, setFreightOn] = useState(false);
-  const [candidatesOn, setCandidatesOn] = useState(false);
+  // Layer visibility: one source of truth for the legend and the chips.
+  const [vis, setVis] = useState<Visibility>(loadVisibility);
+  useEffect(() => saveVisibility(vis), [vis]);
+  const toggle = (key: string, on = !vis[key]) => setVis((v) => ({ ...v, [key]: on }));
+  const { planes: planesOn, rail: railOn, trains: trainsOn, candidates: candidatesOn, imagery } = vis;
   const [rail, setRail] = useState<GeoJSON.FeatureCollection | null>(null);
-  const [sightings, setSightings] = useState<Sighting[]>([]);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [planeData, setPlaneData] = useState<Plane[]>([]);
+  const [trainData, setTrainData] = useState<TrainPosition[]>([]);
 
   const canEdit = (ownerId: string) => !!user && (user.role === 'admin' || user.id === ownerId);
 
@@ -85,7 +88,6 @@ export default function MapPage({ user }: { user: User | null }) {
 
   useEffect(() => { void reload(); }, []);
 
-  useEffect(() => { api.settings().then(setSettings).catch(() => {}); }, []);
 
   // Start on home, unless a spot or place was asked for in the URL.
   useEffect(() => {
@@ -93,20 +95,21 @@ export default function MapPage({ user }: { user: User | null }) {
     api.settings().then((s) => map.jumpTo({ center: [s.home.lng, s.home.lat], zoom: 10 })).catch(() => {});
   }, [map]);
 
-  // Rail lines: fetched once, used both for the (toggleable) layer and for snapping freight ghosts to a line.
+  // Rail lines: fetched once for the (toggleable) layer.
   useEffect(() => { api.rail().then(setRail).catch(() => {}); }, []);
   useEffect(() => { if (map) { updateRail(map, rail ?? { type: 'FeatureCollection', features: [] }); setLayerVisible(map, ['rail-lines', 'rail-industrial'], railOn); } }, [map, rail, railOn]);
 
   // Planes: on demand, cached 10s server-side, refreshed every 15s while on and the tab is visible.
   useEffect(() => {
     if (!map) return;
-    setLayerVisible(map, ['planes', 'planes-proj', 'planes-ghost'], planesOn);
-    if (!planesOn) return;
+    setLayerVisible(map, PLANE_LAYERS, planesOn);
+    if (!planesOn) { setPlaneData([]); return; }
     let stop = false;
     const tick = () => {
       if (document.hidden) return;
       api.planes(centre.lat, centre.lng, 60).then((planes) => {
         if (stop) return;
+        setPlaneData(planes);
         const projections = planes.filter((p) => p.track != null && p.gs != null).map((p) => {
           const pts: [number, number][] = [[p.lon, p.lat]];
           for (let m2 = 3; m2 <= 15; m2 += 3) { const d = deadReckon(p, m2); if (d) pts.push([d.lon, d.lat]); }
@@ -116,7 +119,7 @@ export default function MapPage({ user }: { user: User | null }) {
         const ghosts = aheadMin > 0.5 && aheadMin <= 15
           ? planes.map((p) => { const d = deadReckon(p, aheadMin); return d ? { hex: p.hex, lat: d.lat, lon: d.lon } : null; }).filter((g): g is { hex: string; lat: number; lon: number } => g !== null)
           : [];
-        updatePlanes(map, planes, projections, ghosts);
+        updatePlanes(map, planes, projections, ghosts, sunPos(time, centre.lat, centre.lng));
       }).catch(() => {});
     };
     tick();
@@ -124,44 +127,21 @@ export default function MapPage({ user }: { user: User | null }) {
     return () => { stop = true; clearInterval(id); };
   }, [map, planesOn, centre.lat, centre.lng, time]);
 
-  // Trains: predicted positions at map time, refetched whenever the time slider moves.
+  // Trains: live positions *now* (not the slider time), polled while on and the tab is visible.
   useEffect(() => {
     if (!map) return;
     setLayerVisible(map, ['trains'], trainsOn);
-    if (!trainsOn) return;
+    if (!trainsOn) { trainPopup.current?.remove(); setTrainData([]); return; }
     let stop = false;
-    api.trains(time).then((r) => { if (!stop) updateTrains(map, r.positions); }).catch(() => {});
-    return () => { stop = true; };
-  }, [map, trainsOn, time]);
-
-  // Freight sightings + ghosts: fetched around the map view, ghosts recomputed locally as the slider moves.
-  useEffect(() => {
-    if (!map) return;
-    setLayerVisible(map, ['sightings', 'sightings-ghost'], freightOn);
-    if (!freightOn) return;
-    let stop = false;
-    api.sightings({ near: `${centre.lat},${centre.lng}`, radiusKm: 40 }).then((s) => { if (!stop) setSightings(s); }).catch(() => {});
-    return () => { stop = true; };
-  }, [map, freightOn, centre.lat, centre.lng, view]);
-
-  useEffect(() => {
-    if (!map || !freightOn) return;
-    const lines = (rail?.features ?? []).filter((f): f is GeoJSON.Feature<GeoJSON.LineString> => f.geometry?.type === 'LineString');
-    const byRef = new Map(lines.map((f) => [String(f.properties?.id ?? ''), f.geometry.coordinates as [number, number][]]));
-    const now = Date.now();
-    const ghosts: { id: string; kind: string; lat: number; lng: number }[] = [];
-    for (const s of sightings) {
-      const seenAt = new Date(s.seenAt).getTime();
-      if (!Number.isFinite(seenAt) || (now - seenAt) / 60_000 > RECENT_SIGHTING_MIN) continue;
-      const coords = s.lineRef ? byRef.get(s.lineRef) : undefined;
-      if (!coords) continue;
-      const elapsedMin = Math.max(0, Math.min(RECENT_SIGHTING_MIN, (time.getTime() - seenAt) / 60_000));
-      const speed = s.loaded === false ? (settings?.freightSpeedEmptyKmh ?? 80) : (settings?.freightSpeedLoadedKmh ?? 60);
-      const pos = projectAlongLine(coords, s, s.direction, speed, elapsedMin);
-      if (pos) ghosts.push({ id: s.id, kind: s.kind, lat: pos.lat, lng: pos.lng });
-    }
-    updateSightings(map, sightings, ghosts);
-  }, [map, freightOn, sightings, rail, time, settings]);
+    const tick = () => {
+      if (document.hidden) return;
+      api.trains().then((r) => { if (!stop) { updateTrains(map, r.positions); setTrainData(r.positions); } }).catch(() => {});
+    };
+    tick();
+    const id = setInterval(tick, TRAINS_POLL_MS);
+    document.addEventListener('visibilitychange', tick);
+    return () => { stop = true; clearInterval(id); document.removeEventListener('visibilitychange', tick); };
+  }, [map, trainsOn]);
 
   // Candidates: OSM points of interest, fetched by bbox while the layer is on.
   useEffect(() => {
@@ -255,6 +235,12 @@ export default function MapPage({ user }: { user: User | null }) {
   }, [map, view]);
 
   useEffect(() => { if (map) setImagery(map, imagery); }, [map, imagery]);
+  // Categories without their own feed effect: apply straight from the legend state.
+  useEffect(() => {
+    if (!map) return;
+    const groups = groupLayers(map.getStyle().layers ?? []);
+    for (const c of CATEGORIES) if (!FEED_KEYS.includes(c.key)) setLayerVisible(map, groups[c.key], vis[c.key]);
+  }, [map, vis]);
   useEffect(() => { if (map) setTerrain3d(map, terrain); }, [map, terrain]);
 
   const placeDraft = editing?.type === 'place' ? editing.draft : null;
@@ -280,6 +266,8 @@ export default function MapPage({ user }: { user: User | null }) {
       return;
     }
     if (editing) return;
+    const train = map.getLayer('trains') ? map.queryRenderedFeatures(e.point, { layers: ['trains'] })[0] : undefined;
+    if (train) return showTrainPopup(map, train);
     const hit = map.queryRenderedFeatures(e.point, { layers: CLICKABLE.filter((l) => map.getLayer(l)) })[0];
     if (!hit) return setSelected(null);
     const id = hit.properties?.id as string;
@@ -367,42 +355,33 @@ export default function MapPage({ user }: { user: User | null }) {
     setSelected({ type: 'spot', id: spot.id });
   }
 
-  async function saveSighting(d: SightingDraft) {
-    await api.createSighting({ ...d, seenAt: new Date().toISOString() });
-    setEditing(null);
-    if (freightOn) api.sightings({ near: `${centre.lat},${centre.lng}`, radiusKm: 40 }).then(setSightings).catch(() => {});
-  }
-
-  function logSightingHere() {
-    const draft: SightingDraft = { kind: 'coal', direction: 'up', lat: centre.lat, lng: centre.lng, notes: '', loaded: null, visibility: 'private' };
-    setSelected(null);
-    setEditing({ type: 'sighting', draft }); // opens at the map centre immediately; geolocation refines it if it answers in time
-    navigator.geolocation?.getCurrentPosition(
-      (pos) => setEditing((prev) => (prev?.type === 'sighting' ? { type: 'sighting', draft: { ...prev.draft, lat: pos.coords.latitude, lng: pos.coords.longitude } } : prev)),
-      () => {},
-      { timeout: 4000 }
-    );
-  }
-
   const panelOpen = !!editing || !!selectedSpot || !!selectedPlace || !!selectedCandidate;
   const placeSpots = selectedPlace ? spots.filter((s) => s.placeId === selectedPlace.id) : [];
 
   return (
-    <div className="mapshell">
+    <div className={`mapshell${panelOpen ? ' mapshell--panel' : ''}`}>
       <div ref={container} className="mapshell__map" />
       {error && <div className="maptoast error">{error}</div>}
       {mode !== 'browse' && <div className="maptoast">{mode === 'pick-spot' ? 'Click the map to place the spot' : 'Click the map to add outline points'}</div>}
 
+      <Legend map={map} vis={vis} onToggle={toggle} />
+      <NearbyList planes={planesOn ? planeData : null} trains={trainsOn ? trainData : null} centre={centre}
+        onHover={(at) => { if (map) setNearbyHighlight(map, at); }}
+        onPlane={(r) => { if (map) map.flyTo({ center: [r.lng, r.lat], zoom: Math.max(map.getZoom(), 11) }); }}
+        onTrain={(r) => {
+          if (!map) return;
+          map.flyTo({ center: [r.lng, r.lat], zoom: Math.max(map.getZoom(), 12) });
+          const t = trainData.find((x) => x.tripId === r.id);
+          if (t) showTrainPopup(map, { type: 'Feature', properties: { route: t.route, headsign: t.headsign, status: t.status, delaySec: t.delaySec }, geometry: { type: 'Point', coordinates: [t.lng, t.lat] } });
+        }} />
       <div className="maptools">
         <button className={`chip${goodOnly ? ' active' : ''}`} onClick={() => setGoodOnly(!goodOnly)} title="Only spots whose good times match the map time">Good now</button>
-        <button className={`chip${imagery ? ' active' : ''}`} onClick={() => setImageryOn(!imagery)}>Satellite</button>
+        <button className={`chip${imagery ? ' active' : ''}`} onClick={() => toggle('imagery')}>Satellite</button>
         <button className={`chip${terrain ? ' active' : ''}`} onClick={() => setTerrainOn(!terrain)}>3D</button>
-        <button className={`chip${planesOn ? ' active' : ''}`} onClick={() => setPlanesOn(!planesOn)} title="Live aircraft, dead-reckoned 15 minutes ahead">✈ Planes</button>
-        <button className={`chip${railOn ? ' active' : ''}`} onClick={() => setRailOn(!railOn)}>🛤 Rail</button>
-        <button className={`chip${trainsOn ? ' active' : ''}`} onClick={() => setTrainsOn(!trainsOn)} title="Passenger trains at map time (needs a TfNSW key)">🚆 Trains</button>
-        <button className={`chip${freightOn ? ' active' : ''}`} onClick={() => setFreightOn(!freightOn)} title="Logged coal/freight sightings and their projected ghosts">🚂 Freight</button>
-        <button className={`chip${candidatesOn ? ' active' : ''}`} onClick={() => setCandidatesOn(!candidatesOn)} title="OpenStreetMap viewpoints, ruins and other candidates">📍 Candidates</button>
-        {user && !editing && <button className="chip" onClick={logSightingHere}>🚂 Train seen</button>}
+        <button className={`chip${planesOn ? ' active' : ''}`} onClick={() => toggle('planes')} title="Live aircraft, dead-reckoned 15 minutes ahead">✈ Planes</button>
+        <button className={`chip${railOn ? ' active' : ''}`} onClick={() => toggle('rail')}>🛤 Rail</button>
+        <button className={`chip${trainsOn ? ' active' : ''}`} onClick={() => toggle('trains')} title="Live passenger train positions, refreshed every 20s (needs a TfNSW key)">🚆 Trains</button>
+        <button className={`chip${candidatesOn ? ' active' : ''}`} onClick={() => toggle('candidates')} title="OpenStreetMap viewpoints, ruins and other candidates">📍 Candidates</button>
         {user && !editing && (
           <>
             <button className={`chip${mode === 'pick-spot' ? ' active' : ''}`} onClick={() => setMode(mode === 'pick-spot' ? 'browse' : 'pick-spot')}>+ Spot</button>
@@ -427,10 +406,6 @@ export default function MapPage({ user }: { user: User | null }) {
             <PlaceEditor draft={editing.draft} drawing={mode === 'draw'} onDrawing={(on) => setMode(on ? 'draw' : 'browse')}
               onChange={(draft) => setEditing({ type: 'place', draft })} onSave={() => savePlace(editing.draft)} onCancel={cancelEdit}
               onDelete={editing.draft.id ? () => void deletePlace(editing.draft.id!) : undefined} />
-          )}
-          {editing?.type === 'sighting' && (
-            <SightingForm draft={editing.draft} onChange={(draft) => setEditing({ type: 'sighting', draft })}
-              onSave={() => void saveSighting(editing.draft)} onCancel={cancelEdit} />
           )}
           {!editing && selectedSpot && (
             <SpotPanel spot={selectedSpot} place={places.find((p) => p.id === selectedSpot.placeId)} time={time}
@@ -478,4 +453,29 @@ export default function MapPage({ user }: { user: User | null }) {
       <TimeBar lat={origin.lat} lng={origin.lng} />
     </div>
   );
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+}
+
+function delayText(sec: number): string {
+  const min = Math.round(sec / 60);
+  if (min === 0) return 'on time';
+  return min > 0 ? `${min} min late` : `${-min} min early`;
+}
+
+const trainPopup: { current: Popup | null } = { current: null };
+
+/** A small popup for a train marker: route, headsign, live/estimated and delay. */
+function showTrainPopup(map: MlMap, f: GeoJSON.Feature) {
+  const p = (f.properties ?? {}) as { route?: string; headsign?: string; status?: string; delaySec?: number };
+  const live = p.status === 'live';
+  const html = `<strong>${escapeHtml(p.route || 'Train')}</strong>${p.headsign ? ` → ${escapeHtml(p.headsign)}` : ''}<br/>`
+    + `<span>${live ? '● Live position' : '○ Scheduled estimate'} · ${delayText(Number(p.delaySec ?? 0))}</span>`;
+  trainPopup.current?.remove();
+  trainPopup.current = new Popup({ closeButton: true, offset: 10 })
+    .setLngLat((f.geometry as GeoJSON.Point).coordinates as [number, number])
+    .setHTML(html)
+    .addTo(map);
 }

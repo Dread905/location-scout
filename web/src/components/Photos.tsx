@@ -128,7 +128,7 @@ export default function Photos({ spot, canEdit, onMoveSpot, onCreateSpotAt }: {
           {pending.map((p, i) => (
             <div key={p.preview} className="photos__pending">
               <img src={p.preview} alt="" />
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div className="grow stack-4">
                 <input value={p.caption} placeholder="Caption" onChange={(e) => setPending((l) => l.map((x, j) => (j === i ? { ...x, caption: e.target.value } : x)))} />
                 <select value={p.kind} onChange={(e) => setPending((l) => l.map((x, j) => (j === i ? { ...x, kind: e.target.value as Photo['kind'] } : x)))}>
                   <option value="taken_here">Taken from here</option>
@@ -142,16 +142,16 @@ export default function Photos({ spot, canEdit, onMoveSpot, onCreateSpotAt }: {
             </div>
           ))}
           {gps && gpsKm > 0.02 && (
-            <div className="banner" style={{ marginTop: 8 }}>
+            <div className="banner mt-8">
               Photo was taken {gpsKm < 1 ? `${Math.round(gpsKm * 1000)} m` : `${gpsKm.toFixed(1)} km`} from this spot.
-              <div className="chiprow" style={{ marginTop: 6 }}>
+              <div className="chiprow mt-6">
                 <button onClick={() => onMoveSpot(gps.lat!, gps.lng!)}>Move spot here</button>
                 <button onClick={async () => upload(await onCreateSpotAt(gps.lat!, gps.lng!))} disabled={!!busy}>Create spot here with these photos</button>
               </div>
             </div>
           )}
           {pending.length > 0 && (
-            <div className="chiprow" style={{ marginTop: 8 }}>
+            <div className="chiprow mt-8">
               <button className="primary" onClick={() => void upload(spot)} disabled={!!busy}>{busy || `Upload ${pending.length} to this spot`}</button>
               <button onClick={clearPending} disabled={!!busy}>Cancel</button>
             </div>

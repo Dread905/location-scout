@@ -31,7 +31,7 @@ export default function FirstRun({ onDone }: { onDone: () => void }) {
         <h2>Create the admin account</h2>
         <p className="hint">You're the first user, so this account gets admin rights.</p>
       </div>
-      <form onSubmit={submit} style={{ maxWidth: 360 }}>
+      <form onSubmit={submit} className="narrow-form">
         <div className="formrow"><label>Username</label><input value={username} onChange={(e) => setUsername(e.target.value)} required /></div>
         <div className="formrow"><label>Password</label><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} minLength={8} required /></div>
         {error && <p className="status-line error">{error}</p>}

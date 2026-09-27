@@ -105,7 +105,13 @@ function bracket(stopTimes: StopTimeRow[], nowSec: number, delaySec: number): { 
   return null;
 }
 
-/** Where every currently-running trip is: interpolated along its shape between the scheduled stops either side of `at`, shifted by any realtime delay. */
+/**
+ * Where every currently-running trip is. A realtime vehicle position wins
+ * (status 'live'); otherwise it's interpolated along the trip's shape between
+ * the scheduled stops either side of `at`, shifted by any realtime delay.
+ * Realtime vehicles with a position but no matching running trip are
+ * included too, as 'live'.
+ */
 export function predictTrainPositions(feed: TrainsFeedData, at: Date, realtime: RealtimeEntry[]): TrainPosition[] {
   const rtByTrip = new Map(realtime.map((r) => [r.tripId, r]));
   const out: TrainPosition[] = [];
@@ -144,6 +150,19 @@ export function predictTrainPositions(feed: TrainsFeedData, at: Date, realtime: 
     }
     const route = feed.routes.get(trip.routeId);
     out.push({ tripId: trip.id, routeId: trip.routeId, route: route?.shortName ?? route?.longName ?? '', headsign: trip.headsign, lat, lng, status, delaySec });
+  }
+
+  const seen = new Set(out.map((p) => p.tripId));
+  const tripsById = new Map(feed.trips.map((t) => [t.id, t]));
+  for (const rt of realtime) {
+    if (seen.has(rt.tripId) || rt.vehicleLat == null || rt.vehicleLng == null) continue;
+    if (!Number.isFinite(rt.vehicleLat) || !Number.isFinite(rt.vehicleLng) || (rt.vehicleLat === 0 && rt.vehicleLng === 0)) continue;
+    const trip = tripsById.get(rt.tripId);
+    const route = trip ? feed.routes.get(trip.routeId) : undefined;
+    out.push({
+      tripId: rt.tripId, routeId: trip?.routeId ?? '', route: route?.shortName || route?.longName || '', headsign: trip?.headsign ?? '',
+      lat: rt.vehicleLat, lng: rt.vehicleLng, status: 'live', delaySec: rt.delaySec,
+    });
   }
   return out;
 }

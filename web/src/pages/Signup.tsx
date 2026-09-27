@@ -23,8 +23,8 @@ export default function Signup({ onDone }: { onDone: () => void }) {
   }
 
   return (
-    <div className="signin" style={{ position: 'static', transform: 'none', margin: '80px auto' }}>
-      <h2 style={{ marginTop: 0 }}>Sign up</h2>
+    <div className="signin signin--page">
+      <h2>Sign up</h2>
       <p className="hint">New accounts are contributors: you can add and edit your own places and spots.</p>
       <form onSubmit={submit}>
         <div className="formrow"><label>Username</label><input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus required /></div>
@@ -32,7 +32,7 @@ export default function Signup({ onDone }: { onDone: () => void }) {
         {error && <p className="status-line error">{error}</p>}
         <button className="primary" type="submit" disabled={busy}>{busy ? 'Creating…' : 'Create account'}</button>
       </form>
-      <p className="hint" style={{ marginTop: 12 }}>Already have an account? <Link to="/login">Sign in</Link></p>
+      <p className="hint mt-12">Already have an account? <Link to="/login">Sign in</Link></p>
     </div>
   );
 }

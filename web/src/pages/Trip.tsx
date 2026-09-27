@@ -74,7 +74,7 @@ export default function Trip() {
           <button className={from === 'home' ? 'active' : ''} onClick={() => setFrom('home')}>From home{settings ? ` (${settings.home.name})` : ''}</button>
           <button className={from === 'map' ? 'active' : ''} onClick={() => setFrom('map')}>From map centre</button>
         </div>
-        <label className="toggle" style={{ display: 'flex', gap: 8, alignItems: 'center', minWidth: 240 }}>
+        <label className="toggle toggle--inline">
           Within {radiusKm} km
           <input type="range" min={5} max={300} step={5} value={radiusKm} onChange={(e) => setRadiusKm(Number(e.target.value))} />
         </label>

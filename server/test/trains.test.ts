@@ -78,3 +78,20 @@ test('nextPasses: a spot far from the line gets nothing', () => {
   const passes = nextPasses(feed, { lat: -33.05, lng: 152.0 }, 24, new Date('2026-01-05T06:00:00'));
   assert.equal(passes.length, 0);
 });
+
+test('predictTrainPositions: a realtime vehicle with no running scheduled trip is still shown, as live', () => {
+  const feed = fixture();
+  const at = new Date('2026-01-05T08:00:00'); // before T1's window
+  const out = predictTrainPositions(feed, at, [
+    { tripId: 'T1', delaySec: 120, vehicleLat: -33.01, vehicleLng: 150.0 },
+    { tripId: 'UNKNOWN', delaySec: 0, vehicleLat: -33.5, vehicleLng: 150.5 },
+    { tripId: 'NOPOS', delaySec: 0 },
+  ]);
+  assert.equal(out.length, 2, 'the entry without a position is dropped');
+  const t1 = out.find((p) => p.tripId === 'T1')!;
+  assert.equal(t1.status, 'live');
+  assert.equal(t1.route, 'BB', 'route and headsign come from the static trip when known');
+  assert.equal(t1.headsign, 'Bathurst');
+  assert.equal(t1.delaySec, 120);
+  assert.equal(out.find((p) => p.tripId === 'UNKNOWN')!.status, 'live');
+});

@@ -15,6 +15,9 @@ export default function Settings({ user }: { user: User | null }) {
   const [scoutTest, setScoutTest] = useState<{ ok: boolean; message: string } | null>(null);
   const [scoutTesting, setScoutTesting] = useState(false);
   const [trains, setTrains] = useState<TrainsStatus | null>(null);
+  const [keyInput, setKeyInput] = useState('');
+  const [keyBusy, setKeyBusy] = useState(false);
+  const [keyMsg, setKeyMsg] = useState('');
 
   useEffect(() => { api.settings().then(setDraft).catch((err) => setError((err as Error).message)); }, []);
   useEffect(() => { api.trainsStatus().then(setTrains).catch(() => {}); }, []);
@@ -46,6 +49,22 @@ export default function Settings({ user }: { user: User | null }) {
       setDirty(false);
     } catch (err) {
       setError((err as Error).message);
+    }
+  };
+
+  // Saved on its own (not via the savebar) so the key is only ever sent when typed in.
+  const saveKey = async (clear: boolean) => {
+    setKeyBusy(true); setKeyMsg('');
+    try {
+      const next = await api.saveSettings(clear ? { clearTfnswApiKey: true } : { tfnswApiKey: keyInput.trim() });
+      setDraft((d) => (d ? { ...d, tfnswApiKeySet: next.tfnswApiKeySet, tfnswApiKeyFromEnv: next.tfnswApiKeyFromEnv } : next));
+      setKeyInput('');
+      setKeyMsg(clear ? 'Key cleared.' : 'Key saved — importing timetables in the background.');
+      api.trainsStatus().then(setTrains).catch(() => {});
+    } catch (err) {
+      setKeyMsg(`Couldn't save: ${(err as Error).message}`);
+    } finally {
+      setKeyBusy(false);
     }
   };
 
@@ -128,17 +147,25 @@ export default function Settings({ user }: { user: User | null }) {
               </span>
             ) : <span className="hint">Loading…</span>}
           </div>
-          <p className="hint">Set with the <code>TFNSW_API_KEY</code> environment variable — it's never shown here.</p>
+          {draft.tfnswApiKeyFromEnv ? (
+            <p className="hint">Set by the <code>TFNSW_API_KEY</code> environment variable — change it there.</p>
+          ) : (
+            <>
+              <div className="formrow"><label>TfNSW API key</label>
+                <input type="password" autoComplete="off" value={keyInput} placeholder={draft.tfnswApiKeySet ? '•••••••• (saved — enter a new one to replace)' : 'Paste your Open Data API key'}
+                  onChange={(e) => { setKeyInput(e.target.value); setKeyMsg(''); }} />
+                <button type="button" onClick={() => void saveKey(false)} disabled={!keyInput.trim() || keyBusy}>Save key</button>
+                {draft.tfnswApiKeySet && <button type="button" onClick={() => void saveKey(true)} disabled={keyBusy}>Clear</button>}
+              </div>
+              <p className="hint">
+                {draft.tfnswApiKeySet ? 'A key is saved' : 'No key saved'} — it's never shown or sent back here.
+                Get one free from <a href="https://opendata.transport.nsw.gov.au/" target="_blank" rel="noreferrer">TfNSW Open Data</a>.
+                {keyMsg && <> {keyMsg}</>}
+              </p>
+            </>
+          )}
         </section>
 
-        <section>
-          <h2>🚂 Freight</h2>
-          <p className="hint">Typical speeds for projecting a sighted freight train along the line.</p>
-          <div className="formrow"><label>Loaded km/h</label>
-            <input type="number" min={10} max={160} value={draft.freightSpeedLoadedKmh} onChange={(e) => set({ freightSpeedLoadedKmh: Number(e.target.value) })} /></div>
-          <div className="formrow"><label>Empty km/h</label>
-            <input type="number" min={10} max={160} value={draft.freightSpeedEmptyKmh} onChange={(e) => set({ freightSpeedEmptyKmh: Number(e.target.value) })} /></div>
-        </section>
       </fieldset>
 
       {isAdmin && (
