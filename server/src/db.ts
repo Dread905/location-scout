@@ -194,7 +194,13 @@ export interface Db {
 /** For a column added after a table already shipped: `CREATE TABLE IF NOT EXISTS` alone won't add it to an existing db. */
 function addColumnIfMissing(handle: DatabaseSync, table: string, column: string, columnDef: string): void {
   const cols = handle.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
-  if (!cols.some((c) => c.name === column)) handle.exec(`ALTER TABLE ${table} ADD COLUMN ${columnDef}`);
+  if (cols.some((c) => c.name === column)) return;
+  try {
+    handle.exec(`ALTER TABLE ${table} ADD COLUMN ${columnDef}`);
+  } catch (err) {
+    // Another process opening the same file (parallel test runs, a second instance) can add it between the check and here.
+    if (!/duplicate column name/i.test((err as Error).message)) throw err;
+  }
 }
 
 export function createDb(filePath: string = path.join(dataDir, 'location-scout.db')): Db {
