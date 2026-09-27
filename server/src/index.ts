@@ -469,6 +469,25 @@ function servePhoto(variant: 'file' | 'thumb') {
 app.get('/api/photos/:id/file', servePhoto('file'));
 app.get('/api/photos/:id/thumb', servePhoto('thumb'));
 
+app.get('/api/spots/:id/photos', (req, res) => {
+  const spot = db.handle.prepare('SELECT * FROM spots WHERE id = ?').get(req.params.id) as unknown as SpotRow | undefined;
+  if (!spot || !canRead(spot.visibility, spot.owner_id, req.user)) return res.status(404).json({ error: 'Not found' });
+  const rows = db.handle.prepare('SELECT * FROM photos WHERE spot_id = ? ORDER BY created_at').all(spot.id) as unknown as PhotoRow[];
+  res.json(rows.map(photoJson));
+});
+
+app.patch('/api/photos/:id', (req, res) => {
+  const row = db.handle.prepare('SELECT p.*, s.owner_id as spot_owner_id FROM photos p JOIN spots s ON s.id = p.spot_id WHERE p.id = ?')
+    .get(req.params.id) as (PhotoRow & { spot_owner_id: string }) | undefined;
+  if (!row) return res.status(404).json({ error: 'Not found' });
+  if (!canEdit(row.spot_owner_id, req.user)) return res.status(403).json({ error: 'Forbidden' });
+  const b = req.body as Record<string, unknown>;
+  const caption = typeof b.caption === 'string' ? b.caption.slice(0, 500) : row.caption;
+  const kind = b.kind === 'of_location' || b.kind === 'taken_here' ? b.kind : row.kind;
+  db.handle.prepare('UPDATE photos SET caption = ?, kind = ? WHERE id = ?').run(caption, kind, row.id);
+  res.json(photoJson(db.handle.prepare('SELECT * FROM photos WHERE id = ?').get(row.id) as unknown as PhotoRow));
+});
+
 app.delete('/api/photos/:id', (req, res) => {
   const row = db.handle.prepare('SELECT p.*, s.owner_id as spot_owner_id FROM photos p JOIN spots s ON s.id = p.spot_id WHERE p.id = ?')
     .get(req.params.id) as (PhotoRow & { spot_owner_id: string }) | undefined;

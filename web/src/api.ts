@@ -1,4 +1,4 @@
-/** Typed client for every server/src/index.ts endpoint. Phase 2 builds the UI that uses most of these. */
+/** Typed client for every server/src/index.ts endpoint. */
 
 export type Role = 'admin' | 'contributor';
 export type Visibility = 'private' | 'unlisted' | 'public';
@@ -196,6 +196,9 @@ export const api = {
   deleteSpot: (id: string) => fetch(`/api/spots/${id}`, { method: 'DELETE' }).then((r) => json<{ ok: boolean }>(r)),
 
   // --- photos ---
+  spotPhotos: (spotId: string) => fetch(`/api/spots/${spotId}/photos`).then((r) => json<Photo[]>(r)),
+  updatePhoto: (id: string, patch: { caption?: string; kind?: Photo['kind'] }) =>
+    fetch(`/api/photos/${id}`, { method: 'PATCH', headers: jsonHeaders, body: JSON.stringify(patch) }).then((r) => json<Photo>(r)),
   uploadPhoto: (spotId: string, photo: Blob, thumb: Blob, meta: { kind?: string; caption?: string; takenAt?: string; w?: number; h?: number } = {}) => {
     const form = new FormData();
     form.append('photo', photo);

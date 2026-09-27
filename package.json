@@ -12,7 +12,7 @@
     "build": "npm run build -w web && npm run build -w server",
     "start": "npm run start -w server",
     "typecheck": "npx tsc --noEmit -p server/tsconfig.test.json && npx tsc --noEmit -p web",
-    "test": "npm test --workspace server"
+    "test": "npm test --workspaces"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

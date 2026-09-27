@@ -1,18 +1,27 @@
 import { useEffect, useState } from 'react';
 import { Routes, Route, Link, useNavigate, useLocation } from 'react-router-dom';
 import { api, AuthStatus } from './api.js';
+import { TimeProvider } from './time.js';
 import FirstRun from './pages/FirstRun.js';
 import Login from './pages/Login.js';
 import Signup from './pages/Signup.js';
-import Spots from './pages/Spots.js';
+import MapPage from './pages/MapPage.js';
+import PlacePage from './pages/PlacePage.js';
+import Trip from './pages/Trip.js';
+import ImportExport from './pages/ImportExport.js';
+import Settings from './pages/Settings.js';
+
+const NAV = [['/', 'Map'], ['/trip', 'Trip'], ['/import', 'Import / export'], ['/settings', 'Settings']] as const;
 
 export default function App() {
   const [status, setStatus] = useState<AuthStatus | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
 
   const refresh = () => api.authStatus().then(setStatus);
   useEffect(() => { void refresh(); }, []);
+  useEffect(() => setMenuOpen(false), [location.pathname]);
 
   if (!status) return <div className="page"><p className="hint">Loading…</p></div>;
 
@@ -36,26 +45,37 @@ export default function App() {
     navigate('/login');
   }
 
+  const user = status.authed ? status.user : null;
+  const active = (path: string) => (path === '/' ? location.pathname === '/' : location.pathname.startsWith(path));
+
   return (
-    <>
+    <TimeProvider>
       <div className="topbar">
+        <button className="topbar__burger" onClick={() => setMenuOpen(!menuOpen)} aria-label="Menu">☰</button>
         <Link className="logo" to="/">Location<span>Scout</span></Link>
-        <nav>
-          <Link to="/" className={location.pathname === '/' ? 'active' : ''}>Spots</Link>
+        <nav className={menuOpen ? 'is-open' : ''}>
+          {NAV.filter(([path]) => user || (path !== '/import' && path !== '/settings')).map(([path, label]) => (
+            <Link key={path} to={path} className={active(path) ? 'active' : ''}>{label}</Link>
+          ))}
+          {user && <span className="topbar__nav-meta">{user.username} ({user.role})</span>}
         </nav>
-        {status.authed ? (
+        {user ? (
           <>
-            <span className="meta">{status.user?.username} ({status.user?.role})</span>
+            <span className="meta">{user.username} ({user.role})</span>
             <button onClick={logout}>Sign out</button>
           </>
         ) : (
           <Link to="/login">Sign in</Link>
         )}
       </div>
+      {menuOpen && <div className="topbar__scrim" onClick={() => setMenuOpen(false)} />}
       <Routes>
-        <Route path="/" element={<Spots />} />
-        <Route path="*" element={<Spots />} />
+        <Route path="/places/:id" element={<PlacePage />} />
+        <Route path="/trip" element={<Trip />} />
+        <Route path="/import" element={<ImportExport />} />
+        <Route path="/settings" element={<Settings user={user} />} />
+        <Route path="*" element={<MapPage user={user} />} />
       </Routes>
-    </>
+    </TimeProvider>
   );
 }

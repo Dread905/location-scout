@@ -1,6 +1,6 @@
 # Location Scout
 
-A self-hosted map of your favourite photography spots and when the light works there — golden and blue hour, sun and moon alignment, good-times filters. Phase 1 (this): auth, data model, CRUD API, photos, import/export, sharing between instances, Docker. Phase 2 adds the MapLibre map and sun/shadow layers; phase 3 adds live planes, trains and Event Scout integration.
+A self-hosted map of your favourite photography spots and when the light works there — golden and blue hour, sun and moon alignment, good-times filters. Phase 1: auth, data model, CRUD API, photos, import/export, sharing between instances, Docker. Phase 2: the MapLibre map with sun, moon, hillshade and building-shadow layers on a time slider, place/spot editing, alignments, the trip planner and the import/export UI. Phase 3 adds live planes, trains and Event Scout integration.
 
 Same stack as [event-scout](../event-scout): TypeScript, Node 24, Express, `node:sqlite`, React 19 + Vite, npm workspaces.
 
@@ -57,7 +57,8 @@ Auth (`ADMIN_PASSWORD`/setup aside, everything below follows `INSTANCE_MODE`):
 | GET/PATCH/DELETE | `/api/spots/:id` | `goodTimes` is validated: phases, months, days, conditions, event keywords, avoid, notes. |
 | POST | `/api/spots/:id/photos` | Multipart `photo` + `thumb` (already resized in the browser); checked by magic bytes, capped at 15MB. |
 | GET | `/api/photos/:id/file`, `/api/photos/:id/thumb` | Auth-checked against the parent spot's visibility. |
-| DELETE | `/api/photos/:id` | |
+| GET | `/api/spots/:id/photos` | The spot's photos. |
+| PATCH/DELETE | `/api/photos/:id` | PATCH takes `caption` and `kind`. |
 | POST | `/api/import` | A GeoJSON FeatureCollection of places/spots; upserts by `source`+`sourceRef` when both are given. |
 | GET | `/api/export.geojson`, `/api/export.gpx` | Your own places/spots/sightings, or waypoints. |
 | GET/POST | `/api/shares` | List / create a share link (returns a token). |
