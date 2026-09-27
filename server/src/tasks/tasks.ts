@@ -1,12 +1,20 @@
 import { createRegistry } from './registry.js';
 import { db } from '../db.js';
-import { getSettings } from '../settings.js';
+import { getSettings, Settings } from '../settings.js';
 import { syncRemote } from '../share.js';
+import { runRailTask } from '../sources/rail.js';
+import { runCandidatesTask } from '../sources/osm.js';
+import { importStaticGtfs, TrainFeedName } from '../feeds/trains.js';
 
 interface RemoteRow { id: string; owner_id: string; url: string }
 
 const store = { get: db.getKv, set: db.setKv };
 export const tasks = createRegistry(store);
+
+/** Home plus every extra area: every ingestion source filters to these. */
+function areasOf(settings: Settings) {
+  return [settings.home, ...settings.areas];
+}
 
 tasks.register({
   name: 'sync-remotes',
@@ -36,3 +44,41 @@ tasks.register({
     return { ok: failed === 0, message: `${ok} synced, ${failed} failed` };
   },
 });
+
+tasks.register({
+  name: 'rail-network',
+  label: 'Rail network',
+  description: 'Pull the rail lines and nearby industrial/mine sites from OpenStreetMap Overpass for the configured areas.',
+  schedule: '0 4 * * 1', // Monday 4am
+  intervalMinutes: () => 7 * 24 * 60,
+  enabled: () => true,
+  run: (log) => runRailTask(db, areasOf(getSettings(db)), log),
+});
+
+tasks.register({
+  name: 'candidates',
+  label: 'Candidate spots',
+  description: 'Pull viewpoints, ruins and other OpenStreetMap points of interest for the configured areas.',
+  schedule: '0 4 * * 2', // Tuesday 4am, off rail-network's hour
+  intervalMinutes: () => 7 * 24 * 60,
+  enabled: () => true,
+  run: (log) => runCandidatesTask(db, areasOf(getSettings(db)), log),
+});
+
+function trainsStaticTask(feed: TrainFeedName, cron: string) {
+  tasks.register({
+    name: `trains-static-${feed}`,
+    label: `Trains timetable: ${feed}`,
+    description: `Pull the ${feed} GTFS static timetable and keep only trips touching the configured areas.`,
+    schedule: cron,
+    intervalMinutes: () => 7 * 24 * 60,
+    enabled: () => Boolean(process.env.TFNSW_API_KEY),
+    run: (log) => {
+      const key = process.env.TFNSW_API_KEY;
+      if (!key) return Promise.resolve({ ok: true, message: 'Not configured (no TFNSW_API_KEY)' });
+      return importStaticGtfs(db, feed, key, areasOf(getSettings(db)), log);
+    },
+  });
+}
+trainsStaticTask('nswtrains', '0 5 * * 1');
+trainsStaticTask('sydneytrains', '0 5 * * 2');

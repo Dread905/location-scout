@@ -126,6 +126,58 @@ CREATE TABLE IF NOT EXISTS kv (
   value TEXT NOT NULL,
   expires_at TEXT
 );
+
+-- GTFS static data for trains, filtered at import time to trips touching a
+-- configured area. One feed's rows share the 'feed' column ('nswtrains' | 'sydneytrains').
+CREATE TABLE IF NOT EXISTS gtfs_routes (
+  feed TEXT NOT NULL,
+  route_id TEXT NOT NULL,
+  short_name TEXT NOT NULL DEFAULT '',
+  long_name TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (feed, route_id)
+);
+CREATE TABLE IF NOT EXISTS gtfs_trips (
+  feed TEXT NOT NULL,
+  trip_id TEXT NOT NULL,
+  route_id TEXT NOT NULL,
+  service_id TEXT NOT NULL,
+  shape_id TEXT NOT NULL DEFAULT '',
+  headsign TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (feed, trip_id)
+);
+CREATE TABLE IF NOT EXISTS gtfs_stops (
+  feed TEXT NOT NULL,
+  stop_id TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  lat REAL NOT NULL,
+  lng REAL NOT NULL,
+  PRIMARY KEY (feed, stop_id)
+);
+CREATE TABLE IF NOT EXISTS gtfs_stop_times (
+  feed TEXT NOT NULL,
+  trip_id TEXT NOT NULL,
+  stop_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  arrival_sec INTEGER NOT NULL,
+  departure_sec INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_gtfs_stop_times_trip ON gtfs_stop_times(feed, trip_id, seq);
+CREATE TABLE IF NOT EXISTS gtfs_shapes (
+  feed TEXT NOT NULL,
+  shape_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  lat REAL NOT NULL,
+  lng REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_gtfs_shapes ON gtfs_shapes(feed, shape_id, seq);
+CREATE TABLE IF NOT EXISTS gtfs_calendar (
+  feed TEXT NOT NULL,
+  service_id TEXT NOT NULL,
+  days TEXT NOT NULL, -- 7 chars '0'/'1', Monday first, as GTFS calendar.txt orders them
+  start_date TEXT NOT NULL,
+  end_date TEXT NOT NULL,
+  PRIMARY KEY (feed, service_id)
+);
 `;
 
 export interface Db {
@@ -139,10 +191,17 @@ export interface Db {
  * default. A path param — `:memory:` in particular — is what lets tests run
  * against a throwaway database instead of the real one.
  */
+/** For a column added after a table already shipped: `CREATE TABLE IF NOT EXISTS` alone won't add it to an existing db. */
+function addColumnIfMissing(handle: DatabaseSync, table: string, column: string, columnDef: string): void {
+  const cols = handle.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === column)) handle.exec(`ALTER TABLE ${table} ADD COLUMN ${columnDef}`);
+}
+
 export function createDb(filePath: string = path.join(dataDir, 'location-scout.db')): Db {
   const handle = new DatabaseSync(filePath, { timeout: 5000 });
   if (filePath !== ':memory:') handle.exec('PRAGMA journal_mode = WAL');
   handle.exec(SCHEMA);
+  addColumnIfMissing(handle, 'sightings', 'loaded', 'loaded INTEGER');
 
   function getKv(key: string): string | null {
     const row = handle.prepare('SELECT value, expires_at FROM kv WHERE key = ?').get(key) as

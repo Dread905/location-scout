@@ -8,11 +8,14 @@ import { MAP_CENTRE_KEY } from './MapPage.js';
 
 const DAYS = 7;
 const ALIGN_BONUS_H = 12;
+const CROWD_LOOKUP_CAP = 50; // ponytail: one Event Scout lookup per spot; fine at personal-app scale, cap avoids hammering it on a big radius
 
 interface Row { spot: Spot; km: number; good: { start: Date; end: Date; phase: Phase } | null; align: Alignment | null; score: number }
 
-// Phase 3 hook: subtract Event Scout busyness for the window here (a crowd penalty, in hours).
-const crowdPenaltyHours = (_spot: Spot, _at: Date) => 0;
+/** A busier-than-typical venue near the spot pushes it later in the ranking (score is "hours until", lower is better). */
+function crowdPenaltyHours(crowdScore: number | undefined): number {
+  return crowdScore == null ? 0 : crowdScore * 12;
+}
 
 function readCentre(): { lat: number; lng: number } | null {
   try { return JSON.parse(localStorage.getItem(MAP_CENTRE_KEY) ?? 'null'); } catch { return null; }
@@ -26,6 +29,7 @@ export default function Trip() {
   const [from, setFrom] = useState<'home' | 'map'>('home');
   const [radiusKm, setRadiusKm] = useState(50);
   const [spots, setSpots] = useState<Spot[] | null>(null);
+  const [crowdScores, setCrowdScores] = useState<Record<string, number>>({});
   const [error, setError] = useState('');
 
   useEffect(() => { api.settings().then(setSettings).catch((err) => setError((err as Error).message)); }, []);
@@ -34,8 +38,18 @@ export default function Trip() {
   useEffect(() => {
     if (!origin) return;
     setSpots(null);
+    setCrowdScores({});
     api.spots({ near: `${origin.lat},${origin.lng}`, radiusKm }).then(setSpots).catch((err) => setError((err as Error).message));
   }, [origin?.lat, origin?.lng, radiusKm]);
+
+  useEffect(() => {
+    if (!spots) return;
+    for (const spot of spots.slice(0, CROWD_LOOKUP_CAP)) {
+      api.spotNearby(spot.id).then((r) => {
+        if (r.crowd?.score != null) setCrowdScores((prev) => ({ ...prev, [spot.id]: r.crowd!.score! }));
+      }).catch(() => {});
+    }
+  }, [spots]);
 
   const rows = useMemo(() => {
     if (!spots || !origin) return [];
@@ -47,10 +61,10 @@ export default function Trip() {
       const first = [good?.start, align?.start].filter(Boolean).sort((a, b) => a!.getTime() - b!.getTime())[0];
       if (!first) continue;
       const hours = (first.getTime() - now.getTime()) / 3_600_000;
-      out.push({ spot, km: haversineKm(origin.lat, origin.lng, spot.lat, spot.lng), good, align, score: hours - (align ? ALIGN_BONUS_H : 0) + crowdPenaltyHours(spot, first) });
+      out.push({ spot, km: haversineKm(origin.lat, origin.lng, spot.lat, spot.lng), good, align, score: hours - (align ? ALIGN_BONUS_H : 0) + crowdPenaltyHours(crowdScores[spot.id]) });
     }
     return out.sort((a, b) => a.score - b.score);
-  }, [spots]);
+  }, [spots, crowdScores]);
 
   return (
     <div className="page">

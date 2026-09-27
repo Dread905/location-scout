@@ -34,7 +34,7 @@ interface SpotRow {
 }
 interface SightingRow {
   id: string; owner_id: string; kind: string; direction: string; lat: number; lng: number; line_ref: string;
-  seen_at: string; notes: string; visibility: Visibility; source: string; source_ref: string;
+  seen_at: string; notes: string; visibility: Visibility; source: string; source_ref: string; loaded: number | null;
 }
 interface PhotoRow { id: string; spot_id: string; kind: string; file: string; thumb: string; caption: string; taken_at: string | null }
 
@@ -86,6 +86,7 @@ export function buildFeatureCollection(
       properties: {
         kind: 'sighting', id: s.id, sightingKind: s.kind, direction: s.direction, lineRef: s.line_ref,
         seenAt: s.seen_at, notes: s.notes, visibility: s.visibility, source: s.source, sourceRef: s.source_ref,
+        loaded: s.loaded == null ? null : Boolean(s.loaded),
       },
     });
   }
@@ -255,13 +256,14 @@ export async function upsertBundle(
     const localId = existing?.id ?? crypto.randomUUID();
     db.handle
       .prepare(
-        `INSERT INTO sightings (id, owner_id, kind, direction, lat, lng, line_ref, seen_at, notes, visibility, source, source_ref)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'private', 'remote', ?)
+        `INSERT INTO sightings (id, owner_id, kind, direction, lat, lng, line_ref, seen_at, notes, visibility, source, source_ref, loaded)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'private', 'remote', ?, ?)
          ON CONFLICT(id) DO UPDATE SET kind=excluded.kind, direction=excluded.direction, lat=excluded.lat,
-           lng=excluded.lng, line_ref=excluded.line_ref, seen_at=excluded.seen_at, notes=excluded.notes`
+           lng=excluded.lng, line_ref=excluded.line_ref, seen_at=excluded.seen_at, notes=excluded.notes, loaded=excluded.loaded`
       )
       .run(localId, ownerId, String(p.sightingKind ?? 'other'), String(p.direction ?? ''), lat, lng,
-        String(p.lineRef ?? ''), String(p.seenAt ?? now), String(p.notes ?? ''), sourceRef);
+        String(p.lineRef ?? ''), String(p.seenAt ?? now), String(p.notes ?? ''), sourceRef,
+        typeof p.loaded === 'boolean' ? (p.loaded ? 1 : 0) : null);
     result.sightings++;
   }
 

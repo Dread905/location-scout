@@ -71,3 +71,33 @@ Auth (`ADMIN_PASSWORD`/setup aside, everything below follows `INSTANCE_MODE`):
 | POST | `/api/tasks/:name/run` | Admin: run a task now. |
 
 Remotes are SSRF-guarded: http(s) only, private/loopback/link-local addresses blocked unless `allowPrivateRemotes` is set (for LAN setups).
+
+Phase 3 — live feeds and ingestion (all follow the same auth rules above):
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/planes?lat=&lng=&nm=` | adsb.lol/airplanes.live aircraft near a point, cached 10s server-side. |
+| GET | `/api/rail` | Cached OSM rail network + nearby industrial/mine sites, GeoJSON. |
+| GET/POST | `/api/sightings` | Freight/coal train sightings. `?near=lat,lng&radiusKm=` or `?bbox=`. POST snaps to the nearest cached rail line. |
+| GET/PATCH/DELETE | `/api/sightings/:id` | |
+| GET | `/api/spots/:id/freight` | "Freight usually passes" pattern from nearby sightings. |
+| GET | `/api/trains?at=` | Predicted passenger train positions at a time (needs `TFNSW_API_KEY`). |
+| GET | `/api/spots/:id/trains?hours=` | Next scheduled passes within ~2km of the spot. |
+| GET | `/api/trains/status` | Whether a key is set, last static import, trip count. |
+| GET | `/api/spots/:id/nearby`, `/api/places/:id/nearby` | Nearby Event Scout events (7 days, keyword-flagged) and venue busyness. |
+| GET | `/api/eventscout/test?url=` | Admin: try reaching an Event Scout URL. |
+| GET | `/api/candidates?bbox=` | OSM candidate points of interest. |
+| POST | `/api/candidates/:id/promote` | Turn a candidate into a spot. |
+| GET | `/api/spots/:id/commons` | Wikimedia Commons photos near the spot, cached 1 day. |
+
+### Feed limitations
+
+- **Planes**: fetched on demand while the map is open, no background polling. Projected +15 minutes by dead reckoning (track/speed), so a turning aircraft's ghost drifts off its real path.
+- **Trains**: only what TfNSW publishes in GTFS — NSW TrainLink (XPT, Bathurst Bullet) and Sydney Trains (Blue Mountains line). **Freight and Indian Pacific trains have no public feed.** Coal/freight is covered separately by the rail network layer plus crowdsourced sightings (a "🚂 Train seen" button), which build a "usually passes here" pattern over time and sync between instances through share links.
+- **Freight schedules**: ARTC and HVCCC don't publish anything usable here — see [`docs/freight-schedule-research.md`](docs/freight-schedule-research.md) for the research and why sightings are the feature instead of a parsed timetable.
+- **Event Scout**: called server-side (so CORS doesn't matter), with private IPs allowed since it's usually on the LAN. Without `eventScoutUrl` set, the UI shows "not configured" instead of erroring.
+- Every feed with a missing key/URL reports a clear not-configured status rather than breaking the page.
+
+### Reaching event-scout from a container (Phase 3)
+
+Point `EVENT_SCOUT_URL` at it: either put both compose stacks on a shared external Docker network and use event-scout's service name, or use `http://host.docker.internal:<port>` if event-scout runs on the host outside Docker.

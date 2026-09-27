@@ -16,11 +16,19 @@ import { corsDecision, readOrigins } from './cors.js';
 import { getSettings, saveSettings, Settings } from './settings.js';
 import { geocode } from './geocode.js';
 import { bboxFromRadius, haversine, parseBbox, parseLatLng } from './geo.js';
-import { parseGoodTimes, GoodTimesError } from './goodTimes.js';
+import { parseGoodTimes, GoodTimesError, DEFAULT_GOOD_TIMES } from './goodTimes.js';
+import { fetchPlanes } from './feeds/planes.js';
+import { describePassPattern, passHistogram, snapToNearestLine } from './feeds/freight.js';
+import {
+  combinedFeedData, combinedRealtime, nextPasses, predictTrainPositions, tripCount, TRAIN_FEEDS,
+} from './feeds/trains.js';
+import { nearbyFor } from './feeds/eventScout.js';
+import { getCachedRail, railLinesFromGeoJson } from './sources/rail.js';
+import { commonsNearbyCached } from './sources/commons.js';
 import { deleteImages, detectImageType, MAX_PHOTO_BYTES, parseMultipart, saveImage } from './photos.js';
 import { buildGpx } from './gpx.js';
 import { buildFeatureCollection, importFeatureCollection, ShareBundle, syncRemote } from './share.js';
-import { assertPublicUrl } from './ssrf.js';
+import { assertPublicUrl, guardedFetch } from './ssrf.js';
 import { tasks } from './tasks/tasks.js';
 import { runDueTasksOnStartup, startScheduler } from './tasks/scheduler.js';
 import { versionInfo } from './version.js';
@@ -623,6 +631,221 @@ app.get('/api/tasks', (req, res) => {
 app.post('/api/tasks/:name/run', (req, res, next) => {
   if (!requireAdmin(req, res)) return;
   tasks.run(req.params.name, { force: true }).then((result) => res.json(result)).catch(next);
+});
+
+// --- planes -------------------------------------------------------------------
+
+app.get('/api/planes', async (req, res, next) => {
+  try {
+    const lat = Number(req.query.lat);
+    const lng = Number(req.query.lng);
+    const nm = Number(req.query.nm ?? 40);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return res.status(400).json({ error: 'lat and lng are required' });
+    const baseUrl = process.env.ADSB_URL ?? 'https://api.adsb.lol';
+    res.json(await fetchPlanes(baseUrl, lat, lng, nm));
+  } catch (err) { next(err); }
+});
+
+// --- rail network + freight sightings --------------------------------------------
+
+app.get('/api/rail', (_req, res) => res.json(getCachedRail(db)));
+
+interface SightingRow {
+  id: string; owner_id: string; kind: string; direction: string; lat: number; lng: number; line_ref: string;
+  seen_at: string; notes: string; visibility: Visibility; source: string; source_ref: string; loaded: number | null;
+}
+const SIGHTING_KINDS = ['coal', 'grain', 'intermodal', 'other'];
+function sightingJson(r: SightingRow) {
+  return {
+    id: r.id, ownerId: r.owner_id, kind: r.kind, direction: r.direction, lat: r.lat, lng: r.lng, lineRef: r.line_ref,
+    seenAt: r.seen_at, notes: r.notes, visibility: r.visibility, source: r.source, sourceRef: r.source_ref,
+    loaded: r.loaded == null ? null : Boolean(r.loaded),
+  };
+}
+
+app.get('/api/sightings', (req, res) => {
+  try {
+    const { sql, params } = listVisibilityWhere(req.user);
+    const clauses = [sql];
+    const args: any[] = [...params]; // mixed string/number bind params, as in the spots list route above
+    let bbox = null as ReturnType<typeof parseBbox> | null;
+    if (typeof req.query.bbox === 'string') bbox = parseBbox(req.query.bbox);
+    else if (typeof req.query.near === 'string') {
+      const { lat, lng } = parseLatLng(req.query.near);
+      bbox = bboxFromRadius(lat, lng, Number(req.query.radiusKm ?? 10));
+    }
+    if (bbox) { clauses.push('lat BETWEEN ? AND ? AND lng BETWEEN ? AND ?'); args.push(bbox.south, bbox.north, bbox.west, bbox.east); }
+    const rows = db.handle.prepare(`SELECT * FROM sightings WHERE ${clauses.join(' AND ')} ORDER BY seen_at DESC`).all(...args) as unknown as SightingRow[];
+    res.json(rows.map(sightingJson));
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+app.post('/api/sightings', (req, res) => {
+  const b = req.body as Record<string, unknown>;
+  if (typeof b.lat !== 'number' || typeof b.lng !== 'number') return res.status(400).json({ error: 'lat and lng must be numbers' });
+  if (typeof b.kind !== 'string' || !SIGHTING_KINDS.includes(b.kind)) return res.status(400).json({ error: 'kind must be coal, grain, intermodal or other' });
+  const lines = railLinesFromGeoJson(getCachedRail(db));
+  const snapped = snapToNearestLine(lines, { lat: b.lat, lng: b.lng }, 0.5);
+  const visibility = isVisibility(b.visibility) ? b.visibility : 'private';
+  const id = crypto.randomUUID();
+  db.handle
+    .prepare(
+      `INSERT INTO sightings (id, owner_id, kind, direction, lat, lng, line_ref, seen_at, notes, visibility, source, source_ref, loaded)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', '', ?)`
+    )
+    .run(id, req.user!.id, b.kind, String(b.direction ?? ''), snapped?.lat ?? b.lat, snapped?.lng ?? b.lng, snapped?.lineRef ?? '',
+      typeof b.seenAt === 'string' ? b.seenAt : new Date().toISOString(), String(b.notes ?? ''), visibility,
+      typeof b.loaded === 'boolean' ? (b.loaded ? 1 : 0) : null);
+  res.status(201).json(sightingJson(db.handle.prepare('SELECT * FROM sightings WHERE id = ?').get(id) as unknown as SightingRow));
+});
+
+app.get('/api/sightings/:id', (req, res) => {
+  const row = db.handle.prepare('SELECT * FROM sightings WHERE id = ?').get(req.params.id) as unknown as SightingRow | undefined;
+  if (!row || !canRead(row.visibility, row.owner_id, req.user)) return res.status(404).json({ error: 'Not found' });
+  res.json(sightingJson(row));
+});
+
+app.patch('/api/sightings/:id', (req, res) => {
+  const row = db.handle.prepare('SELECT * FROM sightings WHERE id = ?').get(req.params.id) as unknown as SightingRow | undefined;
+  if (!row) return res.status(404).json({ error: 'Not found' });
+  if (!canEdit(row.owner_id, req.user)) return res.status(403).json({ error: 'Forbidden' });
+  const b = req.body as Record<string, unknown>;
+  const next = {
+    kind: typeof b.kind === 'string' && SIGHTING_KINDS.includes(b.kind) ? b.kind : row.kind,
+    direction: typeof b.direction === 'string' ? b.direction : row.direction,
+    notes: typeof b.notes === 'string' ? b.notes : row.notes,
+    visibility: isVisibility(b.visibility) ? b.visibility : row.visibility,
+    loaded: typeof b.loaded === 'boolean' ? (b.loaded ? 1 : 0) : row.loaded,
+  };
+  db.handle.prepare('UPDATE sightings SET kind=?, direction=?, notes=?, visibility=?, loaded=? WHERE id=?')
+    .run(next.kind, next.direction, next.notes, next.visibility, next.loaded, row.id);
+  res.json(sightingJson(db.handle.prepare('SELECT * FROM sightings WHERE id = ?').get(row.id) as unknown as SightingRow));
+});
+
+app.delete('/api/sightings/:id', (req, res) => {
+  const row = db.handle.prepare('SELECT * FROM sightings WHERE id = ?').get(req.params.id) as unknown as SightingRow | undefined;
+  if (!row) return res.status(404).json({ error: 'Not found' });
+  if (!canEdit(row.owner_id, req.user)) return res.status(403).json({ error: 'Forbidden' });
+  db.handle.prepare('DELETE FROM sightings WHERE id = ?').run(row.id);
+  res.json({ ok: true });
+});
+
+app.get('/api/spots/:id/freight', (req, res) => {
+  const spot = db.handle.prepare('SELECT * FROM spots WHERE id = ?').get(req.params.id) as unknown as SpotRow | undefined;
+  if (!spot || !canRead(spot.visibility, spot.owner_id, req.user)) return res.status(404).json({ error: 'Not found' });
+  const { sql, params } = listVisibilityWhere(req.user);
+  const rows = db.handle.prepare(`SELECT lat, lng, seen_at FROM sightings WHERE ${sql}`).all(...params) as { lat: number; lng: number; seen_at: string }[];
+  const histogram = passHistogram(rows.map((r) => ({ lat: r.lat, lng: r.lng, seenAt: r.seen_at })), spot);
+  res.json({ pattern: describePassPattern(histogram) });
+});
+
+// --- trains -----------------------------------------------------------------
+
+app.get('/api/trains/status', (_req, res) => {
+  const configured = Boolean(process.env.TFNSW_API_KEY);
+  const lastImport = TRAIN_FEEDS.map((f) => db.getKv(`trains:lastImport:${f}`)).filter((v): v is string => Boolean(v)).sort().at(-1) ?? null;
+  res.json({ configured, lastImport, tripCount: tripCount(db) });
+});
+
+app.get('/api/trains', async (req, res, next) => {
+  try {
+    const key = process.env.TFNSW_API_KEY;
+    if (!key) return res.json({ configured: false, positions: [] });
+    const at = req.query.at ? new Date(String(req.query.at)) : new Date();
+    const [feed, realtime] = [combinedFeedData(db), await combinedRealtime(key)];
+    res.json({ configured: true, positions: predictTrainPositions(feed, at, realtime) });
+  } catch (err) { next(err); }
+});
+
+app.get('/api/spots/:id/trains', (req, res) => {
+  const spot = db.handle.prepare('SELECT * FROM spots WHERE id = ?').get(req.params.id) as unknown as SpotRow | undefined;
+  if (!spot || !canRead(spot.visibility, spot.owner_id, req.user)) return res.status(404).json({ error: 'Not found' });
+  if (!process.env.TFNSW_API_KEY) return res.json({ configured: false, passes: [] });
+  const hours = Number(req.query.hours ?? 6);
+  const passes = nextPasses(combinedFeedData(db), spot, hours, new Date());
+  res.json({ configured: true, passes });
+});
+
+// --- Event Scout: nearby events and busyness --------------------------------------
+
+function nearbyOriginForSpot(row: SpotRow): { lat: number; lng: number } {
+  if (row.place_id) {
+    const place = db.handle.prepare('SELECT lat, lng FROM places WHERE id = ?').get(row.place_id) as { lat: number; lng: number } | undefined;
+    if (place) return place;
+  }
+  return { lat: row.lat, lng: row.lng };
+}
+
+app.get('/api/spots/:id/nearby', async (req, res, next) => {
+  try {
+    const spot = db.handle.prepare('SELECT * FROM spots WHERE id = ?').get(req.params.id) as unknown as SpotRow | undefined;
+    if (!spot || !canRead(spot.visibility, spot.owner_id, req.user)) return res.status(404).json({ error: 'Not found' });
+    const origin = nearbyOriginForSpot(spot);
+    const goodTimes = JSON.parse(spot.good_times) as { eventKeywords?: string[] };
+    res.json(await nearbyFor(db, getSettings(db).eventScoutUrl, origin.lat, origin.lng, goodTimes.eventKeywords ?? []));
+  } catch (err) { next(err); }
+});
+
+app.get('/api/places/:id/nearby', async (req, res, next) => {
+  try {
+    const place = db.handle.prepare('SELECT * FROM places WHERE id = ?').get(req.params.id) as unknown as PlaceRow | undefined;
+    if (!place || !canRead(place.visibility, place.owner_id, req.user)) return res.status(404).json({ error: 'Not found' });
+    res.json(await nearbyFor(db, getSettings(db).eventScoutUrl, place.lat, place.lng, []));
+  } catch (err) { next(err); }
+});
+
+// --- candidates (OSM) + Commons inspiration ---------------------------------------
+
+app.get('/api/candidates', (req, res) => {
+  try {
+    let rows: any[];
+    if (typeof req.query.bbox === 'string') {
+      const b = parseBbox(req.query.bbox);
+      rows = db.handle.prepare('SELECT * FROM candidates WHERE lat BETWEEN ? AND ? AND lng BETWEEN ? AND ?').all(b.south, b.north, b.west, b.east);
+    } else {
+      rows = db.handle.prepare('SELECT * FROM candidates').all();
+    }
+    res.json(rows.map((r) => ({ id: r.id, source: r.source, ref: r.ref, name: r.name, lat: r.lat, lng: r.lng, tags: JSON.parse(r.tags), fetchedAt: r.fetched_at })));
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+app.post('/api/candidates/:id/promote', (req, res) => {
+  const row = db.handle.prepare('SELECT * FROM candidates WHERE id = ?').get(req.params.id) as any;
+  if (!row) return res.status(404).json({ error: 'Not found' });
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  db.handle
+    .prepare(
+      `INSERT INTO spots (id, place_id, owner_id, name, notes, lat, lng, tags, facing_deg, fov_deg, good_times, visibility, source, source_ref, created_at, updated_at)
+       VALUES (?, NULL, ?, ?, '', ?, ?, '[]', NULL, NULL, ?, 'private', 'osm', ?, ?, ?)`
+    )
+    .run(id, req.user!.id, row.name || 'Candidate', row.lat, row.lng, JSON.stringify(DEFAULT_GOOD_TIMES), row.ref, now, now);
+  res.status(201).json(spotJson(db.handle.prepare('SELECT * FROM spots WHERE id = ?').get(id) as unknown as SpotRow));
+});
+
+app.get('/api/eventscout/test', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const url = String(req.query.url ?? getSettings(db).eventScoutUrl ?? '');
+  if (!url) return res.json({ ok: false, message: 'No URL set' });
+  try {
+    const buf = await guardedFetch(`${url.replace(/\/$/, '')}/api/density/areas`, true);
+    const data = JSON.parse(buf.toString('utf8')) as { areas?: unknown[] };
+    res.json({ ok: true, message: `Reached it — ${data.areas?.length ?? 0} density area(s)` });
+  } catch (err) {
+    res.json({ ok: false, message: (err as Error).message });
+  }
+});
+
+app.get('/api/spots/:id/commons', async (req, res, next) => {
+  try {
+    const spot = db.handle.prepare('SELECT * FROM spots WHERE id = ?').get(req.params.id) as unknown as SpotRow | undefined;
+    if (!spot || !canRead(spot.visibility, spot.owner_id, req.user)) return res.status(404).json({ error: 'Not found' });
+    res.json(await commonsNearbyCached(db, spot.lat, spot.lng));
+  } catch (err) { next(err); }
 });
 
 // --- 404 + error handling, then the built frontend -------------------------------

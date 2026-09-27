@@ -6,6 +6,7 @@ import { hhmm } from '../time.js';
 import DayStrip from './DayStrip.js';
 import { GoodTimesChips } from './GoodTimesEditor.js';
 import Photos from './Photos.js';
+import Nearby from './Nearby.js';
 
 export function formatAlignment(a: Alignment) {
   const day = a.start.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
@@ -50,8 +51,7 @@ export default function SpotPanel({ spot, place, time, canEdit, onEdit, onDelete
         : <ul className="plainlist">{next.map((a) => <li key={a.start.getTime() + a.body}>{formatAlignment(a)}</li>)}</ul>}
 
       <h4>Nearby</h4>
-      {/* Phase 3 hook: events (Event Scout), crowd now vs typical, next trains/planes passing this spot. */}
-      <p className="hint">Events, crowds and trains arrive in a later phase.</p>
+      <Nearby spot={spot} />
 
       {canEdit && (
         <div className="panel__actions">

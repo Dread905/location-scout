@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from 'react';
-import { api, GeocodeResult, Role, Settings as SettingsType, User } from '../api.js';
+import { api, GeocodeResult, Role, Settings as SettingsType, TaskStatus, TrainsStatus, User } from '../api.js';
 
 type Area = SettingsType['home'];
 
@@ -12,8 +12,12 @@ export default function Settings({ user }: { user: User | null }) {
   const [geoQuery, setGeoQuery] = useState('');
   const [geoResults, setGeoResults] = useState<GeocodeResult[] | null>(null);
   const [geoBusy, setGeoBusy] = useState(false);
+  const [scoutTest, setScoutTest] = useState<{ ok: boolean; message: string } | null>(null);
+  const [scoutTesting, setScoutTesting] = useState(false);
+  const [trains, setTrains] = useState<TrainsStatus | null>(null);
 
   useEffect(() => { api.settings().then(setDraft).catch((err) => setError((err as Error).message)); }, []);
+  useEffect(() => { api.trainsStatus().then(setTrains).catch(() => {}); }, []);
   if (!draft) return <div className="page">{error ? <p className="status-line error">{error}</p> : <p className="hint">Loading…</p>}</div>;
 
   const set = (patch: Partial<SettingsType>) => {
@@ -43,6 +47,14 @@ export default function Settings({ user }: { user: User | null }) {
     } catch (err) {
       setError((err as Error).message);
     }
+  };
+
+  const testScout = async () => {
+    setScoutTesting(true);
+    setScoutTest(null);
+    try { setScoutTest(await api.testEventScout(draft.eventScoutUrl)); }
+    catch (err) { setScoutTest({ ok: false, message: (err as Error).message }); }
+    finally { setScoutTesting(false); }
   };
 
   const fromResult = (r: GeocodeResult, radiusKm: number): Area => ({ name: r.displayName.split(',')[0], lat: r.lat, lng: r.lng, radiusKm });
@@ -98,13 +110,25 @@ export default function Settings({ user }: { user: User | null }) {
         <section>
           <h2>🔗 Instance</h2>
           <div className="formrow"><label>Event Scout URL</label>
-            <input value={draft.eventScoutUrl} placeholder="http://event-scout:3001" onChange={(e) => set({ eventScoutUrl: e.target.value })} /></div>
+            <input value={draft.eventScoutUrl} placeholder="http://event-scout:3001" onChange={(e) => { set({ eventScoutUrl: e.target.value }); setScoutTest(null); }} />
+            <button type="button" onClick={() => void testScout()} disabled={!draft.eventScoutUrl || scoutTesting}>{scoutTesting ? 'Testing…' : 'Test'}</button>
+          </div>
+          {scoutTest && <div className={`status-line ${scoutTest.ok ? 'ok' : 'error'}`}>{scoutTest.ok ? '●' : '✕'} {scoutTest.message}</div>}
           <div className="formrow"><label>Allow sign-up</label>
             <input type="checkbox" checked={draft.allowSignup} onChange={(e) => set({ allowSignup: e.target.checked })} />
             <span className="hint">New accounts are contributors.</span></div>
           <div className="formrow"><label>Private remotes</label>
             <input type="checkbox" checked={draft.allowPrivateRemotes} onChange={(e) => set({ allowPrivateRemotes: e.target.checked })} />
             <span className="hint">Let remotes resolve to LAN addresses.</span></div>
+          <div className="formrow" style={{ marginTop: 8 }}><label>TfNSW trains</label>
+            {trains ? (
+              <span className={`status-line ${trains.configured ? 'ok' : ''}`}>
+                {trains.configured ? '●' : '○'} {trains.configured ? `configured · ${trains.tripCount} trips imported` : 'not configured'}
+                {trains.lastImport ? ` · last import ${new Date(trains.lastImport).toLocaleString()}` : ''}
+              </span>
+            ) : <span className="hint">Loading…</span>}
+          </div>
+          <p className="hint">Set with the <code>TFNSW_API_KEY</code> environment variable — it's never shown here.</p>
         </section>
 
         <section>
@@ -124,8 +148,43 @@ export default function Settings({ user }: { user: User | null }) {
         </div>
       )}
 
+      {isAdmin && <Tasks />}
       {isAdmin && <Users me={user!} />}
     </div>
+  );
+}
+
+function Tasks() {
+  const [tasks, setTasks] = useState<TaskStatus[]>([]);
+  const [error, setError] = useState('');
+  const [running, setRunning] = useState<string | null>(null);
+
+  const load = () => api.tasks().then((r) => setTasks(r.tasks)).catch((err) => setError((err as Error).message));
+  useEffect(() => { void load(); }, []);
+
+  const run = async (name: string) => {
+    setRunning(name);
+    try { await api.runTask(name); await load(); } catch (err) { setError((err as Error).message); } finally { setRunning(null); }
+  };
+
+  return (
+    <section>
+      <h2>⚙ Background tasks</h2>
+      <table className="triptable">
+        <thead><tr><th>Task</th><th>Status</th><th>Last run</th><th /></tr></thead>
+        <tbody>
+          {tasks.map((t) => (
+            <tr key={t.name}>
+              <td>{t.label}<div className="hint">{t.description}</div></td>
+              <td>{!t.enabled ? 'off' : t.running ? 'running…' : t.lastOk == null ? '—' : t.lastOk ? '✓' : '✕ failed'}</td>
+              <td className="hint">{t.lastRun ? `${new Date(t.lastRun).toLocaleString()} — ${t.lastResult ?? ''}` : 'never'}</td>
+              <td><button onClick={() => void run(t.name)} disabled={running === t.name || t.running}>{running === t.name ? 'Running…' : 'Run now'}</button></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {error && <p className="status-line error">{error}</p>}
+    </section>
   );
 }
 

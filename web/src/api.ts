@@ -113,6 +113,41 @@ export interface Remote {
   created_at: string;
 }
 
+// --- phase 3: feeds ---
+
+export interface Plane { hex: string; flight: string; lat: number; lon: number; track: number | null; gs: number | null; alt_baro: number | null; t: string; seen: number }
+
+export interface RailFeature extends GeoJSON.Feature { properties: { id: string; kind: 'rail' | 'industrial' | 'mine' | 'works'; usage?: string; service?: string; name?: string } }
+
+export type SightingKind = 'coal' | 'grain' | 'intermodal' | 'other';
+export interface Sighting {
+  id: string; ownerId: string; kind: SightingKind; direction: string; lat: number; lng: number; lineRef: string;
+  seenAt: string; notes: string; visibility: Visibility; source: string; sourceRef: string; loaded: boolean | null;
+}
+
+export interface TrainPosition { tripId: string; routeId: string; route: string; headsign: string; lat: number; lng: number; status: 'live' | 'scheduled'; delaySec: number }
+export interface TrainPass { tripId: string; routeId: string; route: string; headsign: string; at: string }
+export interface TrainsStatus { configured: boolean; lastImport: string | null; tripCount: number }
+
+export interface ScoutEvent {
+  group: string; title: string; description: string; startTime: string; endTime: string; venueName: string;
+  address: string; locality: string; lat: number; lng: number; imageUrl: string | null; category: string; goodDuring: boolean;
+}
+export interface NearbyResult {
+  events: ScoutEvent[];
+  crowd: { venue: string; live: number | null; typical: number | null; score: number | null; bestWindow: string | null } | null;
+  status: 'ok' | 'not_configured';
+}
+
+export interface Candidate { id: string; source: string; ref: string; name: string; lat: number; lng: number; tags: Record<string, string>; fetchedAt: string }
+export interface CommonsImage { title: string; pageUrl: string; thumbUrl: string | null; lat: number; lng: number }
+
+export interface TaskStatus {
+  name: string; label: string; description: string; enabled: boolean; canDisable: boolean; manualOnly: boolean;
+  running: boolean; blockedBy: string | null; schedule: string | null; intervalMinutes: number | null;
+  lastRun: string | null; lastResult: string | null; lastOk: boolean | null; nextDue: string | null; log: string[];
+}
+
 export interface Share {
   token: string;
   owner_id: string;
@@ -227,4 +262,41 @@ export const api = {
     fetch('/api/remotes', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ url }) }).then((r) => json<Remote>(r)),
   deleteRemote: (id: string) => fetch(`/api/remotes/${id}`, { method: 'DELETE' }).then((r) => json<{ ok: boolean }>(r)),
   syncRemote: (id: string) => fetch(`/api/remotes/${id}/sync`, { method: 'POST' }).then((r) => json<{ places: number; spots: number; sightings: number }>(r)),
+
+  // --- planes ---
+  planes: (lat: number, lng: number, nm = 40) => fetch(`/api/planes?lat=${lat}&lng=${lng}&nm=${nm}`).then((r) => json<Plane[]>(r)),
+
+  // --- rail + sightings ---
+  rail: () => fetch('/api/rail').then((r) => json<GeoJSON.FeatureCollection>(r)),
+  sightings: (query: { bbox?: string; near?: string; radiusKm?: number } = {}) => {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(query)) if (v !== undefined) params.set(k, String(v));
+    const qs = params.toString();
+    return fetch(`/api/sightings${qs ? `?${qs}` : ''}`).then((r) => json<Sighting[]>(r));
+  },
+  createSighting: (s: Partial<Sighting>) =>
+    fetch('/api/sightings', { method: 'POST', headers: jsonHeaders, body: JSON.stringify(s) }).then((r) => json<Sighting>(r)),
+  deleteSighting: (id: string) => fetch(`/api/sightings/${id}`, { method: 'DELETE' }).then((r) => json<{ ok: boolean }>(r)),
+  spotFreight: (spotId: string) => fetch(`/api/spots/${spotId}/freight`).then((r) => json<{ pattern: string | null }>(r)),
+
+  // --- trains ---
+  trainsStatus: () => fetch('/api/trains/status').then((r) => json<TrainsStatus>(r)),
+  trains: (at?: Date) => fetch(`/api/trains${at ? `?at=${at.toISOString()}` : ''}`).then((r) => json<{ configured: boolean; positions: TrainPosition[] }>(r)),
+  spotTrains: (spotId: string, hours = 6) => fetch(`/api/spots/${spotId}/trains?hours=${hours}`).then((r) => json<{ configured: boolean; passes: TrainPass[] }>(r)),
+
+  // --- Event Scout ---
+  spotNearby: (spotId: string) => fetch(`/api/spots/${spotId}/nearby`).then((r) => json<NearbyResult>(r)),
+  placeNearby: (placeId: string) => fetch(`/api/places/${placeId}/nearby`).then((r) => json<NearbyResult>(r)),
+
+  // --- candidates + Commons ---
+  candidates: (bbox?: string) => fetch(`/api/candidates${bbox ? `?bbox=${bbox}` : ''}`).then((r) => json<Candidate[]>(r)),
+  promoteCandidate: (id: string) => fetch(`/api/candidates/${id}/promote`, { method: 'POST' }).then((r) => json<Spot>(r)),
+  spotCommons: (spotId: string) => fetch(`/api/spots/${spotId}/commons`).then((r) => json<CommonsImage[]>(r)),
+
+  // --- background tasks ---
+  tasks: () => fetch('/api/tasks').then((r) => json<{ tasks: TaskStatus[] }>(r)),
+  runTask: (name: string) => fetch(`/api/tasks/${name}/run`, { method: 'POST' }).then((r) => json<{ ok: boolean; message: string }>(r)),
+
+  // --- Event Scout test (TfNSW status is under "trains" above; never the key itself) ---
+  testEventScout: (url: string) => fetch(`/api/eventscout/test?url=${encodeURIComponent(url)}`).then((r) => json<{ ok: boolean; message: string }>(r)),
 };

@@ -67,3 +67,26 @@ test('share bundle round-trip: build on one instance, upsert into another', asyn
   const updated = target.handle.prepare('SELECT name FROM spots WHERE id = ?').get(spotRow.id) as { name: string };
   assert.equal(updated.name, 'Skyline (renamed)');
 });
+
+test('share bundle round-trip: a freight sighting carries its kind, direction and loaded flag', async () => {
+  const source = createDb(':memory:');
+  const sourceOwner = crypto.randomUUID();
+  const sightingId = crypto.randomUUID();
+  source.handle
+    .prepare('INSERT INTO sightings (id, owner_id, kind, direction, lat, lng, line_ref, seen_at, notes, visibility, source, source_ref, loaded) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(sightingId, sourceOwner, 'coal', 'up', -33.47, 150.15, 'way/123', new Date().toISOString(), 'heading for Lithgow', 'public', 'manual', '', 1);
+
+  const bundle = buildFeatureCollection(source, sourceOwner, (id, variant) => `http://source.example/api/photos/${id}/${variant}`);
+  const sightingFeature = bundle.features.find((f) => f.properties.kind === 'sighting');
+  assert.equal(sightingFeature?.properties.loaded, true);
+
+  const target = createDb(':memory:');
+  const result = await upsertBundle(target, bundle, crypto.randomUUID(), 'remote-2', async () => Buffer.from(fakeJpeg));
+  assert.equal(result.sightings, 1);
+
+  const row = target.handle.prepare("SELECT * FROM sightings WHERE source = 'remote'").get() as any;
+  assert.equal(row.kind, 'coal');
+  assert.equal(row.direction, 'up');
+  assert.equal(row.line_ref, 'way/123');
+  assert.equal(row.loaded, 1);
+});

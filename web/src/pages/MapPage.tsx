@@ -3,22 +3,26 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { GeoJSONSource, LngLatBounds, Map as MlMap, MapMouseEvent, NavigationControl, ScaleControl, setWorkerUrl } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
-import { api, Place, Spot, User } from '../api.js';
+import { api, Candidate, Place, Settings, Sighting, Spot, User } from '../api.js';
 import {
-  CLICKABLE, initLayers, setImagery, setTerrain3d, STYLE_URL, updateDraft, updateMood,
-  updatePlacesAndSpots, updateRays, updateShadows, updateWedges,
+  CLICKABLE, initFeedLayers, initLayers, setImagery, setLayerVisible, setTerrain3d, STYLE_URL, updateCandidates, updateDraft,
+  updateMood, updatePlacesAndSpots, updatePlanes, updateRail, updateRays, updateShadows, updateSightings, updateTrains, updateWedges,
 } from '../map/layers.js';
 import { goodNow, sunPos } from '../map/sun.js';
+import { deadReckon } from '../map/planes.js';
+import { projectAlongLine } from '../map/freightProject.js';
 import { useMapTime } from '../time.js';
 import TimeBar from '../components/TimeBar.js';
 import SpotPanel from '../components/SpotPanel.js';
 import SpotEditor, { SpotDraft } from '../components/SpotEditor.js';
 import PlaceEditor, { draftToPlace, PlaceDraft, placeToDraft } from '../components/PlaceEditor.js';
 import { emptyGoodTimes } from '../components/GoodTimesEditor.js';
+import SightingForm, { SightingDraft } from '../components/SightingForm.js';
 import DayStrip from '../components/DayStrip.js';
 
-type Selection = { type: 'spot' | 'place'; id: string } | null;
-type Editing = { type: 'spot'; draft: SpotDraft } | { type: 'place'; draft: PlaceDraft } | null;
+type Selection = { type: 'spot' | 'place' | 'candidate'; id: string } | null;
+type Editing = { type: 'spot'; draft: SpotDraft } | { type: 'place'; draft: PlaceDraft } | { type: 'sighting'; draft: SightingDraft } | null;
+const RECENT_SIGHTING_MIN = 90;
 
 export const MAP_CENTRE_KEY = 'ls.mapCentre';
 
@@ -46,6 +50,17 @@ export default function MapPage({ user }: { user: User | null }) {
   const [params, setParams] = useSearchParams();
   const { time } = useMapTime();
 
+  // Phase 3: live feeds, each behind its own toggle so nothing polls unasked.
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [planesOn, setPlanesOn] = useState(false);
+  const [railOn, setRailOn] = useState(false);
+  const [trainsOn, setTrainsOn] = useState(false);
+  const [freightOn, setFreightOn] = useState(false);
+  const [candidatesOn, setCandidatesOn] = useState(false);
+  const [rail, setRail] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [sightings, setSightings] = useState<Sighting[]>([]);
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
+
   const canEdit = (ownerId: string) => !!user && (user.role === 'admin' || user.id === ownerId);
 
   const reload = () => Promise.all([api.places(), api.spots()])
@@ -57,7 +72,7 @@ export default function MapPage({ user }: { user: User | null }) {
     const m = new MlMap({ container: container.current!, style: STYLE_URL, center: [149.577, -33.419], zoom: 10, maxPitch: 75 });
     m.addControl(new NavigationControl({ visualizePitch: true }), 'top-right');
     m.addControl(new ScaleControl({}), 'bottom-left');
-    m.once('style.load', () => { initLayers(m); setMap(m); });
+    m.once('style.load', () => { initLayers(m); initFeedLayers(m); setMap(m); });
     const onMove = () => {
       const c = m.getCenter();
       setCentre({ lat: c.lat, lng: c.lng });
@@ -70,11 +85,94 @@ export default function MapPage({ user }: { user: User | null }) {
 
   useEffect(() => { void reload(); }, []);
 
+  useEffect(() => { api.settings().then(setSettings).catch(() => {}); }, []);
+
   // Start on home, unless a spot or place was asked for in the URL.
   useEffect(() => {
     if (!map || params.get('spot') || params.get('place')) return;
     api.settings().then((s) => map.jumpTo({ center: [s.home.lng, s.home.lat], zoom: 10 })).catch(() => {});
   }, [map]);
+
+  // Rail lines: fetched once, used both for the (toggleable) layer and for snapping freight ghosts to a line.
+  useEffect(() => { api.rail().then(setRail).catch(() => {}); }, []);
+  useEffect(() => { if (map) { updateRail(map, rail ?? { type: 'FeatureCollection', features: [] }); setLayerVisible(map, ['rail-lines', 'rail-industrial'], railOn); } }, [map, rail, railOn]);
+
+  // Planes: on demand, cached 10s server-side, refreshed every 15s while on and the tab is visible.
+  useEffect(() => {
+    if (!map) return;
+    setLayerVisible(map, ['planes', 'planes-proj', 'planes-ghost'], planesOn);
+    if (!planesOn) return;
+    let stop = false;
+    const tick = () => {
+      if (document.hidden) return;
+      api.planes(centre.lat, centre.lng, 60).then((planes) => {
+        if (stop) return;
+        const projections = planes.filter((p) => p.track != null && p.gs != null).map((p) => {
+          const pts: [number, number][] = [[p.lon, p.lat]];
+          for (let m2 = 3; m2 <= 15; m2 += 3) { const d = deadReckon(p, m2); if (d) pts.push([d.lon, d.lat]); }
+          return { hex: p.hex, coords: pts };
+        });
+        const aheadMin = (time.getTime() - Date.now()) / 60_000;
+        const ghosts = aheadMin > 0.5 && aheadMin <= 15
+          ? planes.map((p) => { const d = deadReckon(p, aheadMin); return d ? { hex: p.hex, lat: d.lat, lon: d.lon } : null; }).filter((g): g is { hex: string; lat: number; lon: number } => g !== null)
+          : [];
+        updatePlanes(map, planes, projections, ghosts);
+      }).catch(() => {});
+    };
+    tick();
+    const id = setInterval(tick, 15_000);
+    return () => { stop = true; clearInterval(id); };
+  }, [map, planesOn, centre.lat, centre.lng, time]);
+
+  // Trains: predicted positions at map time, refetched whenever the time slider moves.
+  useEffect(() => {
+    if (!map) return;
+    setLayerVisible(map, ['trains'], trainsOn);
+    if (!trainsOn) return;
+    let stop = false;
+    api.trains(time).then((r) => { if (!stop) updateTrains(map, r.positions); }).catch(() => {});
+    return () => { stop = true; };
+  }, [map, trainsOn, time]);
+
+  // Freight sightings + ghosts: fetched around the map view, ghosts recomputed locally as the slider moves.
+  useEffect(() => {
+    if (!map) return;
+    setLayerVisible(map, ['sightings', 'sightings-ghost'], freightOn);
+    if (!freightOn) return;
+    let stop = false;
+    api.sightings({ near: `${centre.lat},${centre.lng}`, radiusKm: 40 }).then((s) => { if (!stop) setSightings(s); }).catch(() => {});
+    return () => { stop = true; };
+  }, [map, freightOn, centre.lat, centre.lng, view]);
+
+  useEffect(() => {
+    if (!map || !freightOn) return;
+    const lines = (rail?.features ?? []).filter((f): f is GeoJSON.Feature<GeoJSON.LineString> => f.geometry?.type === 'LineString');
+    const byRef = new Map(lines.map((f) => [String(f.properties?.id ?? ''), f.geometry.coordinates as [number, number][]]));
+    const now = Date.now();
+    const ghosts: { id: string; kind: string; lat: number; lng: number }[] = [];
+    for (const s of sightings) {
+      const seenAt = new Date(s.seenAt).getTime();
+      if (!Number.isFinite(seenAt) || (now - seenAt) / 60_000 > RECENT_SIGHTING_MIN) continue;
+      const coords = s.lineRef ? byRef.get(s.lineRef) : undefined;
+      if (!coords) continue;
+      const elapsedMin = Math.max(0, Math.min(RECENT_SIGHTING_MIN, (time.getTime() - seenAt) / 60_000));
+      const speed = s.loaded === false ? (settings?.freightSpeedEmptyKmh ?? 80) : (settings?.freightSpeedLoadedKmh ?? 60);
+      const pos = projectAlongLine(coords, s, s.direction, speed, elapsedMin);
+      if (pos) ghosts.push({ id: s.id, kind: s.kind, lat: pos.lat, lng: pos.lng });
+    }
+    updateSightings(map, sightings, ghosts);
+  }, [map, freightOn, sightings, rail, time, settings]);
+
+  // Candidates: OSM points of interest, fetched by bbox while the layer is on.
+  useEffect(() => {
+    if (!map) return;
+    setLayerVisible(map, ['candidates'], candidatesOn);
+    if (!candidatesOn) return;
+    let stop = false;
+    const b = map.getBounds();
+    api.candidates(`${b.getSouth()},${b.getWest()},${b.getNorth()},${b.getEast()}`).then((c) => { if (!stop) { setCandidates(c); updateCandidates(map, c); } }).catch(() => {});
+    return () => { stop = true; };
+  }, [map, candidatesOn, view]);
 
   useEffect(() => {
     if (!map) return;
@@ -108,6 +206,7 @@ export default function MapPage({ user }: { user: User | null }) {
   // --- data into the map ---
   const selectedSpot = selected?.type === 'spot' ? spots.find((s) => s.id === selected.id) : undefined;
   const selectedPlace = selected?.type === 'place' ? places.find((p) => p.id === selected.id) : undefined;
+  const selectedCandidate = selected?.type === 'candidate' ? candidates.find((c) => c.id === selected.id) : undefined;
   const spotDraft = editing?.type === 'spot' ? editing.draft : null;
 
   const timeKey = Math.floor(time.getTime() / 300_000); // "good" needn't be redone more often than the slider's step
@@ -191,6 +290,10 @@ export default function MapPage({ user }: { user: User | null }) {
       setSelected({ type: 'spot', id });
       const [lng, lat] = (hit.geometry as GeoJSON.Point).coordinates;
       focus(lng, lat);
+    } else if (hit.layer.id === 'candidates') {
+      setSelected({ type: 'candidate', id });
+      const [lng, lat] = (hit.geometry as GeoJSON.Point).coordinates;
+      focus(lng, lat);
     } else {
       setSelected({ type: 'place', id });
       const p = places.find((x) => x.id === id);
@@ -258,7 +361,30 @@ export default function MapPage({ user }: { user: User | null }) {
     setMode('browse');
   }
 
-  const panelOpen = !!editing || !!selectedSpot || !!selectedPlace;
+  async function promoteCandidate(c: Candidate) {
+    const spot = await api.promoteCandidate(c.id);
+    await reload();
+    setSelected({ type: 'spot', id: spot.id });
+  }
+
+  async function saveSighting(d: SightingDraft) {
+    await api.createSighting({ ...d, seenAt: new Date().toISOString() });
+    setEditing(null);
+    if (freightOn) api.sightings({ near: `${centre.lat},${centre.lng}`, radiusKm: 40 }).then(setSightings).catch(() => {});
+  }
+
+  function logSightingHere() {
+    const draft: SightingDraft = { kind: 'coal', direction: 'up', lat: centre.lat, lng: centre.lng, notes: '', loaded: null, visibility: 'private' };
+    setSelected(null);
+    setEditing({ type: 'sighting', draft }); // opens at the map centre immediately; geolocation refines it if it answers in time
+    navigator.geolocation?.getCurrentPosition(
+      (pos) => setEditing((prev) => (prev?.type === 'sighting' ? { type: 'sighting', draft: { ...prev.draft, lat: pos.coords.latitude, lng: pos.coords.longitude } } : prev)),
+      () => {},
+      { timeout: 4000 }
+    );
+  }
+
+  const panelOpen = !!editing || !!selectedSpot || !!selectedPlace || !!selectedCandidate;
   const placeSpots = selectedPlace ? spots.filter((s) => s.placeId === selectedPlace.id) : [];
 
   return (
@@ -271,6 +397,12 @@ export default function MapPage({ user }: { user: User | null }) {
         <button className={`chip${goodOnly ? ' active' : ''}`} onClick={() => setGoodOnly(!goodOnly)} title="Only spots whose good times match the map time">Good now</button>
         <button className={`chip${imagery ? ' active' : ''}`} onClick={() => setImageryOn(!imagery)}>Satellite</button>
         <button className={`chip${terrain ? ' active' : ''}`} onClick={() => setTerrainOn(!terrain)}>3D</button>
+        <button className={`chip${planesOn ? ' active' : ''}`} onClick={() => setPlanesOn(!planesOn)} title="Live aircraft, dead-reckoned 15 minutes ahead">✈ Planes</button>
+        <button className={`chip${railOn ? ' active' : ''}`} onClick={() => setRailOn(!railOn)}>🛤 Rail</button>
+        <button className={`chip${trainsOn ? ' active' : ''}`} onClick={() => setTrainsOn(!trainsOn)} title="Passenger trains at map time (needs a TfNSW key)">🚆 Trains</button>
+        <button className={`chip${freightOn ? ' active' : ''}`} onClick={() => setFreightOn(!freightOn)} title="Logged coal/freight sightings and their projected ghosts">🚂 Freight</button>
+        <button className={`chip${candidatesOn ? ' active' : ''}`} onClick={() => setCandidatesOn(!candidatesOn)} title="OpenStreetMap viewpoints, ruins and other candidates">📍 Candidates</button>
+        {user && !editing && <button className="chip" onClick={logSightingHere}>🚂 Train seen</button>}
         {user && !editing && (
           <>
             <button className={`chip${mode === 'pick-spot' ? ' active' : ''}`} onClick={() => setMode(mode === 'pick-spot' ? 'browse' : 'pick-spot')}>+ Spot</button>
@@ -295,6 +427,10 @@ export default function MapPage({ user }: { user: User | null }) {
             <PlaceEditor draft={editing.draft} drawing={mode === 'draw'} onDrawing={(on) => setMode(on ? 'draw' : 'browse')}
               onChange={(draft) => setEditing({ type: 'place', draft })} onSave={() => savePlace(editing.draft)} onCancel={cancelEdit}
               onDelete={editing.draft.id ? () => void deletePlace(editing.draft.id!) : undefined} />
+          )}
+          {editing?.type === 'sighting' && (
+            <SightingForm draft={editing.draft} onChange={(draft) => setEditing({ type: 'sighting', draft })}
+              onSave={() => void saveSighting(editing.draft)} onCancel={cancelEdit} />
           )}
           {!editing && selectedSpot && (
             <SpotPanel spot={selectedSpot} place={places.find((p) => p.id === selectedSpot.placeId)} time={time}
@@ -324,6 +460,16 @@ export default function MapPage({ user }: { user: User | null }) {
                   <button onClick={() => { setSelected(null); setEditing({ type: 'spot', draft: newSpot(selectedPlace.lat, selectedPlace.lng, selectedPlace.id) }); }}>+ Spot in place</button>
                 </>}
               </div>
+            </>
+          )}
+          {!editing && selectedCandidate && (
+            <>
+              <h2>{selectedCandidate.name || 'Unnamed candidate'}</h2>
+              <p className="hint">OpenStreetMap · {selectedCandidate.source}/{selectedCandidate.ref}</p>
+              {Object.keys(selectedCandidate.tags).length > 0 && (
+                <div className="chiprow">{Object.entries(selectedCandidate.tags).map(([k, v]) => <span key={k} className="chip">{k}={v}</span>)}</div>
+              )}
+              {user && <div className="panel__actions"><button className="primary" onClick={() => void promoteCandidate(selectedCandidate)}>Promote to spot</button></div>}
             </>
           )}
         </aside>

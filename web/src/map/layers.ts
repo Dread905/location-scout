@@ -113,7 +113,98 @@ export function initLayers(map: MlMap) {
   map.addLayer({ id: 'spot-label', type: 'symbol', source: 'spots', filter: ['!', ['has', 'point_count']], minzoom: 12, ...spotLabel });
 }
 
-export const CLICKABLE = ['spot-points', 'place-spots', 'clusters', 'place-points', 'place-fill', 'place-line'];
+/** Phase 3: planes, rail/freight, trains, candidates. Kept separate from initLayers, called once alongside it. */
+export function initFeedLayers(map: MlMap) {
+  // Rail network: lines coloured by usage/service, industrial/mine sites highlighted.
+  map.addSource('rail', { type: 'geojson', data: empty() });
+  map.addLayer({
+    id: 'rail-lines', type: 'line', source: 'rail', filter: ['==', ['geometry-type'], 'LineString'], layout: { visibility: 'none' },
+    paint: {
+      'line-color': ['match', ['get', 'usage'], 'main', '#4cc3ff', 'branch', '#7fd8a0', ['match', ['get', 'service'], 'siding', '#c98a3a', 'yard', '#c98a3a', '#8a93a6']],
+      'line-width': ['match', ['get', 'usage'], 'main', 2.5, 1.5],
+    },
+  });
+  map.addLayer({
+    id: 'rail-industrial', type: 'circle', source: 'rail', filter: ['==', ['geometry-type'], 'Point'], layout: { visibility: 'none' },
+    paint: { 'circle-radius': 5, 'circle-color': ['case', ['==', ['get', 'kind'], 'mine'], '#c94c3a', '#c98a3a'], 'circle-stroke-color': '#0e1014', 'circle-stroke-width': 1 },
+  });
+
+  // Planes: an emoji symbol rotated to track, a dashed +15min projection, and a ghost at map time.
+  map.addSource('planes', { type: 'geojson', data: empty() });
+  map.addLayer({ id: 'planes', type: 'symbol', source: 'planes', layout: {
+    visibility: 'none', 'text-field': '✈', 'text-size': 18, 'text-rotate': ['get', 'track'], 'text-rotation-alignment': 'map', 'text-allow-overlap': true, 'text-ignore-placement': true,
+  }, paint: { 'text-halo-color': '#0e1014', 'text-halo-width': 1 } });
+  map.addSource('planes-proj', { type: 'geojson', data: empty() });
+  map.addLayer({ id: 'planes-proj', type: 'line', source: 'planes-proj', layout: { visibility: 'none' },
+    paint: { 'line-color': '#dfe7ff', 'line-width': 1.5, 'line-dasharray': [2, 2], 'line-opacity': 0.7 } });
+  map.addSource('planes-ghost', { type: 'geojson', data: empty() });
+  map.addLayer({ id: 'planes-ghost', type: 'circle', source: 'planes-ghost', layout: { visibility: 'none' },
+    paint: { 'circle-radius': 5, 'circle-color': '#dfe7ff', 'circle-opacity': 0.5, 'circle-stroke-color': '#dfe7ff', 'circle-stroke-width': 1 } });
+
+  // Trains: live (realtime position) vs scheduled (interpolated).
+  map.addSource('trains', { type: 'geojson', data: empty() });
+  map.addLayer({ id: 'trains', type: 'circle', source: 'trains', layout: { visibility: 'none' }, paint: {
+    'circle-radius': 6, 'circle-color': ['case', ['==', ['get', 'status'], 'live'], '#4ade80', '#8a93a6'],
+    'circle-stroke-color': '#0e1014', 'circle-stroke-width': 1.5,
+  } });
+
+  // Freight sightings + a ghost projected forward while recent.
+  map.addSource('sightings', { type: 'geojson', data: empty() });
+  map.addLayer({ id: 'sightings', type: 'circle', source: 'sightings', layout: { visibility: 'none' },
+    paint: { 'circle-radius': 6, 'circle-color': ['match', ['get', 'kind'], 'coal', '#2b2b2b', 'grain', '#e0c068', 'intermodal', '#4cc3ff', '#8a93a6'], 'circle-stroke-color': '#0e1014', 'circle-stroke-width': 1.5 } });
+  map.addSource('sightings-ghost', { type: 'geojson', data: empty() });
+  map.addLayer({ id: 'sightings-ghost', type: 'circle', source: 'sightings-ghost', layout: { visibility: 'none' },
+    paint: { 'circle-radius': 6, 'circle-color': ['match', ['get', 'kind'], 'coal', '#2b2b2b', 'grain', '#e0c068', 'intermodal', '#4cc3ff', '#8a93a6'], 'circle-opacity': 0.45, 'circle-stroke-color': '#8a93a6', 'circle-stroke-width': 1 } });
+
+  // OSM candidates: muted, distinct from real spots.
+  map.addSource('candidates', { type: 'geojson', data: empty() });
+  map.addLayer({ id: 'candidates', type: 'circle', source: 'candidates', layout: { visibility: 'none' },
+    paint: { 'circle-radius': 6, 'circle-color': '#6b7280', 'circle-opacity': 0.55, 'circle-stroke-color': '#e9ecf3', 'circle-stroke-width': 1, 'circle-stroke-opacity': 0.6 } });
+}
+
+export function setLayerVisible(map: MlMap, layerIds: string[], on: boolean) {
+  for (const id of layerIds) if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
+}
+
+export function updateRail(map: MlMap, fc: GeoJSON.FeatureCollection) {
+  setData(map, 'rail', fc);
+}
+
+export function updatePlanes(
+  map: MlMap,
+  planes: { hex: string; lat: number; lon: number; track: number | null }[],
+  projections: { hex: string; coords: [number, number][] }[],
+  ghosts: { hex: string; lat: number; lon: number }[]
+) {
+  setData(map, 'planes', { type: 'FeatureCollection', features: planes.map((p) => ({
+    type: 'Feature', properties: { id: p.hex, track: p.track ?? 0 }, geometry: { type: 'Point', coordinates: [p.lon, p.lat] },
+  })) });
+  setData(map, 'planes-proj', { type: 'FeatureCollection',
+    features: projections.map((p) => ({ type: 'Feature', properties: { id: p.hex }, geometry: { type: 'LineString', coordinates: p.coords } })) });
+  setData(map, 'planes-ghost', { type: 'FeatureCollection', features: ghosts.map((g) => ({ type: 'Feature', properties: { id: g.hex }, geometry: { type: 'Point', coordinates: [g.lon, g.lat] } })) });
+}
+
+export function updateTrains(map: MlMap, positions: { tripId: string; route: string; headsign: string; status: string; lat: number; lng: number }[]) {
+  setData(map, 'trains', { type: 'FeatureCollection', features: positions.map((p) => ({
+    type: 'Feature', properties: { id: p.tripId, route: p.route, headsign: p.headsign, status: p.status }, geometry: { type: 'Point', coordinates: [p.lng, p.lat] },
+  })) });
+}
+
+export function updateSightings(map: MlMap, sightings: { id: string; kind: string; lat: number; lng: number }[], ghosts: { id: string; kind: string; lat: number; lng: number }[]) {
+  const point = (s: { id: string; kind: string; lat: number; lng: number }): GeoJSON.Feature => ({
+    type: 'Feature', properties: { id: s.id, kind: s.kind }, geometry: { type: 'Point', coordinates: [s.lng, s.lat] },
+  });
+  setData(map, 'sightings', { type: 'FeatureCollection', features: sightings.map(point) });
+  setData(map, 'sightings-ghost', { type: 'FeatureCollection', features: ghosts.map(point) });
+}
+
+export function updateCandidates(map: MlMap, candidates: { id: string; name: string; lat: number; lng: number }[]) {
+  setData(map, 'candidates', { type: 'FeatureCollection', features: candidates.map((c) => ({
+    type: 'Feature', properties: { id: c.id, name: c.name }, geometry: { type: 'Point', coordinates: [c.lng, c.lat] },
+  })) });
+}
+
+export const CLICKABLE = ['spot-points', 'place-spots', 'clusters', 'place-points', 'place-fill', 'place-line', 'candidates'];
 
 export function setImagery(map: MlMap, on: boolean) {
   map.setLayoutProperty('imagery', 'visibility', on ? 'visible' : 'none');
