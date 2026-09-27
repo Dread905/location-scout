@@ -25,7 +25,7 @@ import {
 import { nearbyFor } from './feeds/eventScout.js';
 import { getCachedRail, trackGraphFor } from './sources/rail.js';
 import { commonsNearbyCached } from './sources/commons.js';
-import { deleteImages, detectImageType, MAX_PHOTO_BYTES, parseMultipart, saveImage } from './photos.js';
+import { coverFields, deleteImages, detectImageType, MAX_PHOTO_BYTES, parseMultipart, saveImage, SPOT_COVER_COLS } from './photos.js';
 import { buildGpx } from './gpx.js';
 import { buildFeatureCollection, importFeatureCollection, ShareBundle, syncRemote } from './share.js';
 import { assertPublicUrl, guardedFetch } from './ssrf.js';
@@ -249,12 +249,14 @@ interface SpotRow {
   id: string; place_id: string | null; owner_id: string; name: string; notes: string; lat: number; lng: number;
   tags: string; facing_deg: number | null; fov_deg: number | null; good_times: string;
   visibility: Visibility; source: string; source_ref: string; created_at: string; updated_at: string;
+  photo_count?: number; cover_id?: string | null;
 }
 function spotJson(r: SpotRow) {
   return {
     id: r.id, placeId: r.place_id, ownerId: r.owner_id, name: r.name, notes: r.notes, lat: r.lat, lng: r.lng,
     tags: JSON.parse(r.tags), facingDeg: r.facing_deg, fovDeg: r.fov_deg, goodTimes: JSON.parse(r.good_times),
     visibility: r.visibility, source: r.source, sourceRef: r.source_ref, createdAt: r.created_at, updatedAt: r.updated_at,
+    ...coverFields(r),
   };
 }
 
@@ -345,7 +347,7 @@ app.get('/api/spots', (req, res) => {
       args.push(bbox.south, bbox.north, bbox.west, bbox.east);
     }
 
-    let rows = db.handle.prepare(`SELECT * FROM spots WHERE ${clauses.join(' AND ')} ORDER BY name`).all(...args) as unknown as SpotRow[];
+    let rows = db.handle.prepare(`SELECT spots.*, ${SPOT_COVER_COLS} FROM spots WHERE ${clauses.join(' AND ')} ORDER BY name`).all(...args) as unknown as SpotRow[];
 
     // near= is a circle; the bbox above is only its bounding box.
     if (typeof req.query.near === 'string') {
@@ -382,11 +384,11 @@ app.post('/api/spots', (req, res) => {
     .run(id, b.placeId ? String(b.placeId) : null, req.user!.id, b.name.trim(), String(b.notes ?? ''), b.lat, b.lng,
       JSON.stringify(Array.isArray(b.tags) ? b.tags : []), typeof b.facingDeg === 'number' ? b.facingDeg : null,
       typeof b.fovDeg === 'number' ? b.fovDeg : null, JSON.stringify(goodTimes), visibility, now, now);
-  res.status(201).json(spotJson(db.handle.prepare('SELECT * FROM spots WHERE id = ?').get(id) as unknown as SpotRow));
+  res.status(201).json(spotJson(db.handle.prepare(`SELECT spots.*, ${SPOT_COVER_COLS} FROM spots WHERE id = ?`).get(id) as unknown as SpotRow));
 });
 
 app.get('/api/spots/:id', (req, res) => {
-  const row = db.handle.prepare('SELECT * FROM spots WHERE id = ?').get(req.params.id) as unknown as SpotRow | undefined;
+  const row = db.handle.prepare(`SELECT spots.*, ${SPOT_COVER_COLS} FROM spots WHERE id = ?`).get(req.params.id) as unknown as SpotRow | undefined;
   if (!row || !canRead(row.visibility, row.owner_id, req.user)) return res.status(404).json({ error: 'Not found' });
   res.json(spotJson(row));
 });
@@ -420,7 +422,7 @@ app.patch('/api/spots/:id', (req, res) => {
     .prepare('UPDATE spots SET place_id=?, name=?, notes=?, lat=?, lng=?, tags=?, facing_deg=?, fov_deg=?, good_times=?, visibility=?, updated_at=? WHERE id=?')
     .run(next.place_id, next.name, next.notes, next.lat, next.lng, next.tags, next.facing_deg, next.fov_deg,
       JSON.stringify(goodTimes), next.visibility, new Date().toISOString(), row.id);
-  res.json(spotJson(db.handle.prepare('SELECT * FROM spots WHERE id = ?').get(row.id) as unknown as SpotRow));
+  res.json(spotJson(db.handle.prepare(`SELECT spots.*, ${SPOT_COVER_COLS} FROM spots WHERE id = ?`).get(row.id) as unknown as SpotRow));
 });
 
 app.delete('/api/spots/:id', (req, res) => {
@@ -752,7 +754,7 @@ app.post('/api/candidates/:id/promote', (req, res) => {
        VALUES (?, NULL, ?, ?, '', ?, ?, '[]', NULL, NULL, ?, 'private', 'osm', ?, ?, ?)`
     )
     .run(id, req.user!.id, row.name || 'Candidate', row.lat, row.lng, JSON.stringify(DEFAULT_GOOD_TIMES), row.ref, now, now);
-  res.status(201).json(spotJson(db.handle.prepare('SELECT * FROM spots WHERE id = ?').get(id) as unknown as SpotRow));
+  res.status(201).json(spotJson(db.handle.prepare(`SELECT spots.*, ${SPOT_COVER_COLS} FROM spots WHERE id = ?`).get(id) as unknown as SpotRow));
 });
 
 app.get('/api/eventscout/test', async (req, res) => {

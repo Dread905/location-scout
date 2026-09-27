@@ -64,6 +64,9 @@ export interface Spot {
   sourceRef: string;
   createdAt: string;
   updatedAt: string;
+  /** From the server's spot payload: how many photos, and the cover photo's thumbnail (null when none). */
+  photoCount?: number;
+  coverThumbUrl?: string | null;
 }
 
 export interface Photo {

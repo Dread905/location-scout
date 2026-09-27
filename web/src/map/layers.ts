@@ -1,6 +1,7 @@
 /** MapLibre sources and layers: base extras (imagery, DEM), light (mood, rays, shadows) and our places/spots. */
 import { GeoJSONSource, Map as MlMap, type LightSpecification } from 'maplibre-gl';
 import type { Place, Spot } from '../api.js';
+import { ICON, thumbIconId } from './spotGlance.js';
 import { destination, wedge } from './geo.js';
 import { buildingShadows, MIN_SHADOW_ALT, type Footprint } from './shadows.js';
 import type { ShadowJob } from './shadows.worker.js';
@@ -126,6 +127,19 @@ export function initLayers(map: MlMap) {
     paint: { 'text-color': '#4cc3ff' } });
   map.addLayer({ id: 'spot-points', type: 'circle', source: 'spots', filter: ['!', ['has', 'point_count']], paint: spotPaint });
   map.addLayer({ id: 'spot-label', type: 'symbol', source: 'spots', filter: ['!', ['has', 'point_count']], minzoom: 12, ...spotLabel });
+
+  // Cover-photo thumbnails floating above the dots; images load lazily via styleimagemissing (spotGlance.ts).
+  const thumbs = (minzoom: number) => ({
+    type: 'symbol' as const, minzoom,
+    layout: {
+      'icon-image': ['get', 'thumb'] as any, 'icon-anchor': 'bottom' as const, 'icon-offset': [0, -(ICON.lift - ICON.margin)] as [number, number],
+      'icon-size': ['case', ['get', 'selected'], 1.15, 1] as any, 'icon-allow-overlap': true, 'icon-ignore-placement': true,
+      'symbol-sort-key': ['case', ['get', 'selected'], 1, 0] as any,
+    },
+    paint: { 'icon-opacity': ['interpolate', ['linear'], ['zoom'], minzoom, 0, minzoom + 0.75, 1] as any },
+  });
+  map.addLayer({ id: 'place-spot-thumbs', source: 'place-spots', filter: ['!=', ['get', 'thumb'], ''], ...thumbs(CHILD_SPOT_ZOOM) });
+  map.addLayer({ id: 'spot-thumbs', source: 'spots', filter: ['all', ['!', ['has', 'point_count']], ['!=', ['get', 'thumb'], '']], ...thumbs(12) });
 }
 
 /** Phase 3: planes, rail, trains, candidates. Kept separate from initLayers, called once alongside it. */
@@ -295,7 +309,7 @@ export function updateCandidates(map: MlMap, candidates: { id: string; name: str
   })) });
 }
 
-export const CLICKABLE = ['spot-points', 'place-spots', 'clusters', 'place-points', 'place-fill', 'place-line', 'candidates'];
+export const CLICKABLE = ['spot-thumbs', 'place-spot-thumbs', 'spot-points', 'place-spots', 'clusters', 'place-points', 'place-fill', 'place-line', 'candidates'];
 
 export function setImagery(map: MlMap, on: boolean) {
   map.setLayoutProperty('imagery', 'visibility', on ? 'visible' : 'none');
@@ -427,7 +441,7 @@ function shadowWorker(): Worker | null {
 export function updatePlacesAndSpots(map: MlMap, places: Place[], spots: Spot[], good: (s: Spot) => boolean, selectedId: string | null) {
   const point = (s: Spot): GeoJSON.Feature => ({
     type: 'Feature', geometry: { type: 'Point', coordinates: [s.lng, s.lat] },
-    properties: { id: s.id, name: s.name, good: good(s), selected: s.id === selectedId },
+    properties: { id: s.id, name: s.name, good: good(s), selected: s.id === selectedId, thumb: thumbIconId(s.coverThumbUrl) },
   });
   const placeIds = new Set(places.map((p) => p.id));
   const child = spots.filter((s) => s.placeId && placeIds.has(s.placeId));

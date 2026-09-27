@@ -76,3 +76,17 @@ export function parseMultipart(req: IncomingMessage, limitBytes: number): Promis
     req.pipe(bb);
   });
 }
+
+/**
+ * Extra columns for `SELECT spots.*, ${SPOT_COVER_COLS} FROM spots`: the photo count and the
+ * cover photo's id (a location photo first, then the earliest), so a spot list carries its map
+ * thumbnail without a request per spot. Correlated subqueries ride the idx_photos_spot index.
+ */
+export const SPOT_COVER_COLS =
+  '(SELECT COUNT(*) FROM photos p WHERE p.spot_id = spots.id) AS photo_count, ' +
+  "(SELECT p.id FROM photos p WHERE p.spot_id = spots.id ORDER BY (p.kind = 'of_location') DESC, p.created_at, p.id LIMIT 1) AS cover_id";
+
+/** The payload fields for a row selected with SPOT_COVER_COLS (a row without them reads as no photos). */
+export function coverFields(r: { photo_count?: number | bigint | null; cover_id?: string | null }): { photoCount: number; coverThumbUrl: string | null } {
+  return { photoCount: Number(r.photo_count ?? 0), coverThumbUrl: r.cover_id ? `/api/photos/${r.cover_id}/thumb` : null };
+}

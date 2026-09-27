@@ -14,6 +14,7 @@ import { carriageCount } from '../map/trains3d.js';
 import { goodNow, sunPos } from '../map/sun.js';
 import { Legend } from '../components/Legend.js';
 import { NearbyList } from '../components/NearbyList.js';
+import { attachGlance, attachThumbLoader, GLANCE_LAYERS } from '../map/spotGlance.js';
 import { CATEGORIES, groupLayers, loadVisibility, saveVisibility, type Visibility } from '../map/legend.js';
 import { deadReckon } from '../map/planes.js';
 import { useMapTime } from '../time.js';
@@ -395,7 +396,13 @@ export default function MapPage({ user }: { user: User | null }) {
     if (hit.layer.id === 'clusters') {
       (map.getSource('spots') as GeoJSONSource).getClusterExpansionZoom(hit.properties.cluster_id)
         .then((zoom) => map.easeTo({ center: (hit.geometry as GeoJSON.Point).coordinates as [number, number], zoom }));
-    } else if (hit.layer.id === 'spot-points' || hit.layer.id === 'place-spots') {
+    } else if (GLANCE_LAYERS.includes(hit.layer.id)) {
+      // Touch has no hover: the first tap on a spot shows its glance card, the next one selects it.
+      if (lastPointer.current === 'touch' && glance.current && glance.current.shownId !== id) {
+        glance.current.show(id, (hit.geometry as GeoJSON.Point).coordinates as [number, number]);
+        return;
+      }
+      glance.current?.hide();
       setSelected({ type: 'spot', id });
       const [lng, lat] = (hit.geometry as GeoJSON.Point).coordinates;
       focus(lng, lat);
@@ -409,6 +416,24 @@ export default function MapPage({ user }: { user: User | null }) {
       if (p && hit.layer.id === 'place-points') fitPlace(p);
     }
   };
+  // Spot glance: lazy cover thumbnails and the hover card. Refs keep the handlers on current data.
+  const glance = useRef<ReturnType<typeof attachGlance> | null>(null);
+  const lastPointer = useRef('mouse');
+  const glanceData = useRef<{ spots: Spot[]; time: Date; home: { lat: number; lng: number } | null }>({ spots: [], time, home: null });
+  glanceData.current.spots = shownSpots;
+  glanceData.current.time = time;
+  useEffect(() => {
+    if (!map) return;
+    const detachThumbs = attachThumbLoader(map);
+    const g = attachGlance(map, (id) => glanceData.current.spots.find((s) => s.id === id),
+      () => ({ time: glanceData.current.time, home: glanceData.current.home }));
+    glance.current = g;
+    api.settings().then((s) => { glanceData.current.home = s.home; }).catch(() => {});
+    const canvas = map.getCanvas();
+    const onPointer = (e: PointerEvent) => { lastPointer.current = e.pointerType; };
+    canvas.addEventListener('pointerdown', onPointer);
+    return () => { detachThumbs(); g.detach(); glance.current = null; canvas.removeEventListener('pointerdown', onPointer); };
+  }, [map]);
   useEffect(() => {
     if (!map) return;
     const click = (e: MapMouseEvent) => onClick.current(e);
