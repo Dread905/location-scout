@@ -43,7 +43,6 @@ export function initLayers(map: MlMap) {
     attribution: 'Terrain: <a href="https://registry.opendata.aws/terrain-tiles/">AWS Terrain Tiles</a>' };
   map.addSource('dem', dem);
   map.addSource('terrain', dem); // a second source for 3D terrain, as MapLibre recommends
-  map.setTerrain({ source: 'terrain', exaggeration: 1.4 }); // always on, so tilting by hand shows relief too
   map.addLayer({
     id: 'hillshade', type: 'hillshade', source: 'dem',
     paint: { 'hillshade-illumination-anchor': 'map', 'hillshade-method': 'combined', 'hillshade-exaggeration': 0.5 },
@@ -168,8 +167,14 @@ export function initFeedLayers(map: MlMap) {
     paint: { 'circle-radius': 6, 'circle-color': '#6b7280', 'circle-opacity': 0.55, 'circle-stroke-color': '#e9ecf3', 'circle-stroke-width': 1, 'circle-stroke-opacity': 0.6 } });
 }
 
+/** Layers the user has switched off (legend/chips); code that toggles visibility itself must respect this. */
+export const hiddenLayers = new Set<string>();
+
 export function setLayerVisible(map: MlMap, layerIds: string[], on: boolean) {
-  for (const id of layerIds) if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
+  for (const id of layerIds) {
+    if (on) hiddenLayers.delete(id); else hiddenLayers.add(id);
+    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
+  }
 }
 
 export function updateRail(map: MlMap, fc: GeoJSON.FeatureCollection) {
@@ -208,8 +213,8 @@ export function setImagery(map: MlMap, on: boolean) {
   map.setLayoutProperty('imagery', 'visibility', on ? 'visible' : 'none');
 }
 
-/** Terrain height is always on; the 3D toggle only tilts the camera. */
 export function setTerrain3d(map: MlMap, on: boolean) {
+  map.setTerrain(on ? { source: 'terrain', exaggeration: 1.4 } : null);
   map.easeTo({ pitch: on ? 60 : 0, duration: 600 });
 }
 
@@ -255,7 +260,7 @@ export function updateShadows(map: MlMap, sun: { azimuth: number; altitude: numb
     map.setPaintProperty('terrain-shadow', 'hillshade-illumination-direction', sun.azimuth);
     map.setPaintProperty('terrain-shadow', 'hillshade-illumination-altitude', Math.min(90, Math.max(MIN_SHADOW_ALT, sun.altitude)));
     map.setPaintProperty('terrain-shadow', 'hillshade-exaggeration', 0.6 * k);
-    map.setLayoutProperty('terrain-shadow', 'visibility', k > 0 ? 'visible' : 'none');
+    map.setLayoutProperty('terrain-shadow', 'visibility', k > 0 && !hiddenLayers.has('terrain-shadow') ? 'visible' : 'none');
   }
   if (map.getZoom() < SHADOW_ZOOM || sun.altitude <= 0) return setData(map, 'shadows', empty());
   const layers = buildingLayerIds(map).filter((id) => map.getLayer(id));

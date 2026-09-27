@@ -391,3 +391,24 @@ input[type='checkbox'], input[type='radio'] { width: auto; accent-color: var(--a
 @media (max-width: 820px) { .toggle--inline { min-width: 0; } .signin--page { margin: 32px auto; } }
 .w-auto { width: auto; }
 .spotcard .spotcard__next { margin-top: 8px; }
+
+/* ── Map legend ── */
+.legend { position: absolute; left: 10px; bottom: 110px; z-index: 6; display: flex; flex-direction: column-reverse; align-items: flex-start; gap: 6px; max-width: calc(100% - 20px); }
+.legend > .chip { background: rgba(23, 26, 33, 0.92); backdrop-filter: blur(6px); }
+.legend > .chip.active { background: #2b2412; }
+.legend__panel { width: 250px; max-width: 100%; max-height: min(60vh, calc(100dvh - 240px)); overflow-y: auto; background: var(--glass);
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 4px 12px 10px; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45); }
+.legend__panel h4 { margin: 10px 0 4px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+.legend__row { display: flex; align-items: center; gap: 10px; padding: 4px 0; font-size: 13px; cursor: pointer; }
+.legend__row input { width: auto; margin: 0; accent-color: var(--accent); }
+.legend__swatch { flex: none; width: 22px; height: 12px; border-radius: 3px; position: relative; }
+.legend__swatch--fill { background: var(--sw); border: 1px solid var(--border-hover); }
+.legend__swatch--line::after, .legend__swatch--dashed::after { content: ''; position: absolute; left: 0; right: 0; top: 4px; height: 0; }
+.legend__swatch--line::after { border-top: 3px solid var(--sw); }
+.legend__swatch--dashed::after { border-top: 3px dashed var(--sw); }
+.legend__swatch--dot::after, .legend__swatch--ring::after { content: ''; position: absolute; left: 6px; top: 1px; width: 10px; height: 10px; border-radius: 50%; }
+.legend__swatch--dot::after { background: var(--sw); border: 1px solid var(--text); }
+.legend__swatch--ring::after { background: var(--sw); border: 2px solid #f0fdf4; box-sizing: border-box; }
+.legend__swatch--text::after { content: 'Aa'; position: absolute; inset: -3px 0 0; font-size: 12px; font-weight: 700; text-align: center;
+  color: var(--sw); -webkit-text-stroke: 0.3px var(--text); }
+@media (max-width: 820px) { .legend { bottom: 118px; } }

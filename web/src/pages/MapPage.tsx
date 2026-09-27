@@ -9,6 +9,8 @@ import {
   updateMood, updatePlacesAndSpots, updatePlanes, updateRail, updateRays, updateShadows, updateTrains, updateWedges,
 } from '../map/layers.js';
 import { goodNow, sunPos } from '../map/sun.js';
+import { Legend } from '../components/Legend.js';
+import { CATEGORIES, groupLayers, loadVisibility, saveVisibility, type Visibility } from '../map/legend.js';
 import { deadReckon } from '../map/planes.js';
 import { useMapTime } from '../time.js';
 import TimeBar from '../components/TimeBar.js';
@@ -31,6 +33,9 @@ const newSpot = (lat: number, lng: number, placeId: string | null = null): SpotD
   name: '', notes: '', lat, lng, placeId, tags: [], facingDeg: null, fovDeg: null, goodTimes: emptyGoodTimes(), visibility: 'private',
 });
 
+/** Legend keys whose visibility is applied by their own effect below. */
+const FEED_KEYS = ['imagery', 'planes', 'rail', 'trains', 'candidates'];
+
 export default function MapPage({ user }: { user: User | null }) {
   const container = useRef<HTMLDivElement>(null);
   const [map, setMap] = useState<MlMap | null>(null);
@@ -40,7 +45,6 @@ export default function MapPage({ user }: { user: User | null }) {
   const [selected, setSelected] = useState<Selection>(null);
   const [editing, setEditing] = useState<Editing>(null);
   const [mode, setMode] = useState<'browse' | 'pick-spot' | 'draw'>('browse');
-  const [imagery, setImageryOn] = useState(false);
   const [terrain, setTerrainOn] = useState(false);
   const [goodOnly, setGoodOnly] = useState(false);
   const [centre, setCentre] = useState({ lat: -33.419, lng: 149.577 });
@@ -49,10 +53,11 @@ export default function MapPage({ user }: { user: User | null }) {
   const { time } = useMapTime();
 
   // Phase 3: live feeds, each behind its own toggle so nothing polls unasked.
-  const [planesOn, setPlanesOn] = useState(false);
-  const [railOn, setRailOn] = useState(false);
-  const [trainsOn, setTrainsOn] = useState(false);
-  const [candidatesOn, setCandidatesOn] = useState(false);
+  // Layer visibility: one source of truth for the legend and the chips.
+  const [vis, setVis] = useState<Visibility>(loadVisibility);
+  useEffect(() => saveVisibility(vis), [vis]);
+  const toggle = (key: string, on = !vis[key]) => setVis((v) => ({ ...v, [key]: on }));
+  const { planes: planesOn, rail: railOn, trains: trainsOn, candidates: candidatesOn, imagery } = vis;
   const [rail, setRail] = useState<GeoJSON.FeatureCollection | null>(null);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
 
@@ -226,6 +231,12 @@ export default function MapPage({ user }: { user: User | null }) {
   }, [map, view]);
 
   useEffect(() => { if (map) setImagery(map, imagery); }, [map, imagery]);
+  // Categories without their own feed effect: apply straight from the legend state.
+  useEffect(() => {
+    if (!map) return;
+    const groups = groupLayers(map.getStyle().layers ?? []);
+    for (const c of CATEGORIES) if (!FEED_KEYS.includes(c.key)) setLayerVisible(map, groups[c.key], vis[c.key]);
+  }, [map, vis]);
   useEffect(() => { if (map) setTerrain3d(map, terrain); }, [map, terrain]);
 
   const placeDraft = editing?.type === 'place' ? editing.draft : null;
@@ -349,14 +360,15 @@ export default function MapPage({ user }: { user: User | null }) {
       {error && <div className="maptoast error">{error}</div>}
       {mode !== 'browse' && <div className="maptoast">{mode === 'pick-spot' ? 'Click the map to place the spot' : 'Click the map to add outline points'}</div>}
 
+      <Legend map={map} vis={vis} onToggle={toggle} />
       <div className="maptools">
         <button className={`chip${goodOnly ? ' active' : ''}`} onClick={() => setGoodOnly(!goodOnly)} title="Only spots whose good times match the map time">Good now</button>
-        <button className={`chip${imagery ? ' active' : ''}`} onClick={() => setImageryOn(!imagery)}>Satellite</button>
+        <button className={`chip${imagery ? ' active' : ''}`} onClick={() => toggle('imagery')}>Satellite</button>
         <button className={`chip${terrain ? ' active' : ''}`} onClick={() => setTerrainOn(!terrain)}>3D</button>
-        <button className={`chip${planesOn ? ' active' : ''}`} onClick={() => setPlanesOn(!planesOn)} title="Live aircraft, dead-reckoned 15 minutes ahead">✈ Planes</button>
-        <button className={`chip${railOn ? ' active' : ''}`} onClick={() => setRailOn(!railOn)}>🛤 Rail</button>
-        <button className={`chip${trainsOn ? ' active' : ''}`} onClick={() => setTrainsOn(!trainsOn)} title="Live passenger train positions, refreshed every 20s (needs a TfNSW key)">🚆 Trains</button>
-        <button className={`chip${candidatesOn ? ' active' : ''}`} onClick={() => setCandidatesOn(!candidatesOn)} title="OpenStreetMap viewpoints, ruins and other candidates">📍 Candidates</button>
+        <button className={`chip${planesOn ? ' active' : ''}`} onClick={() => toggle('planes')} title="Live aircraft, dead-reckoned 15 minutes ahead">✈ Planes</button>
+        <button className={`chip${railOn ? ' active' : ''}`} onClick={() => toggle('rail')}>🛤 Rail</button>
+        <button className={`chip${trainsOn ? ' active' : ''}`} onClick={() => toggle('trains')} title="Live passenger train positions, refreshed every 20s (needs a TfNSW key)">🚆 Trains</button>
+        <button className={`chip${candidatesOn ? ' active' : ''}`} onClick={() => toggle('candidates')} title="OpenStreetMap viewpoints, ruins and other candidates">📍 Candidates</button>
         {user && !editing && (
           <>
             <button className={`chip${mode === 'pick-spot' ? ' active' : ''}`} onClick={() => setMode(mode === 'pick-spot' ? 'browse' : 'pick-spot')}>+ Spot</button>
