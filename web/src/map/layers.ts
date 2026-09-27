@@ -7,6 +7,7 @@ import { buildingShadows, MIN_SHADOW_ALT } from './shadows.js';
 const SHADOW_COLOR = '#0a0c1a';
 import { altitudeM, pitchBlend, planeLabel, planeShadowPos } from './planes3d.js';
 import { Planes3dLayer } from './planes3dLayer.js';
+import { registerTerrainShadowProtocol, setTerrainShadowSun, TERRAIN_SHADOW_MAX_DEM_Z } from './terrainShadowSource.js';
 import { moodAt, moonPos, sunPos, sunriseSunset } from './sun.js';
 
 export const STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
@@ -50,14 +51,14 @@ export function initLayers(map: MlMap) {
     paint: { 'hillshade-illumination-anchor': 'map', 'hillshade-method': 'combined', 'hillshade-exaggeration': 0.5 },
   }, firstRoad);
 
-  // Terrain self-shadowing in the building-shadow tone: shadow side only, lit side transparent.
-  map.addLayer({
-    id: 'terrain-shadow', type: 'hillshade', source: 'dem',
-    paint: { 'hillshade-illumination-anchor': 'map', 'hillshade-method': 'standard', 'hillshade-exaggeration': 0,
-      'hillshade-highlight-color': 'rgba(0,0,0,0)', 'hillshade-accent-color': 'rgba(0,0,0,0)', 'hillshade-shadow-color': SHADOW_COLOR },
-  }, firstRoad);
-
   map.addSource('shadows', { type: 'geojson', data: empty() });
+  // Cast terrain shadows (ray-marched in workers) plus slopes facing away from the sun, as one mask in the
+  // building-shadow tone. Tiles start empty-sun and follow updateShadows.
+  registerTerrainShadowProtocol(SHADOW_COLOR);
+  map.addSource('terrain-shadow', { type: 'raster', tiles: ['terrainshadow://{z}/{x}/{y}?az=180&alt=45'], tileSize: 256,
+    minzoom: 9, maxzoom: TERRAIN_SHADOW_MAX_DEM_Z });
+  map.addLayer({ id: 'terrain-shadow', type: 'raster', source: 'terrain-shadow', minzoom: 9, layout: { visibility: 'none' },
+    paint: { 'raster-opacity': 0.3, 'raster-fade-duration': 0, 'raster-resampling': 'linear' } }, firstBuilding);
   map.addLayer({ id: 'shadows', type: 'fill', source: 'shadows', paint: { 'fill-color': SHADOW_COLOR, 'fill-opacity': 0.3 } }, firstBuilding);
 
   map.addSource('mood', { type: 'geojson', data: { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[[-180, -85], [180, -85], [180, 85], [-180, 85], [-180, -85]]] } } });
@@ -285,7 +286,7 @@ export function updateMood(map: MlMap, sun: { azimuth: number; altitude: number 
   map.setPaintProperty('hillshade', 'hillshade-illumination-altitude', Math.min(90, Math.max(2, sun.altitude)));
   map.setPaintProperty('hillshade', 'hillshade-exaggeration', up ? 0.55 : 0.25);
   map.setPaintProperty('hillshade', 'hillshade-highlight-color', up ? (sun.altitude < 8 ? 'rgba(255,190,120,0.55)' : 'rgba(255,255,255,0.4)') : 'rgba(0,0,0,0)');
-  map.setPaintProperty('hillshade', 'hillshade-shadow-color', up ? 'rgba(20,20,40,0.6)' : 'rgba(0,0,10,0.5)');
+  map.setPaintProperty('hillshade', 'hillshade-shadow-color', up ? 'rgba(20,20,40,0.2)' : 'rgba(0,0,10,0.5)');
   const mood = moodAt(sun.altitude);
   map.setPaintProperty('mood', 'fill-color', mood.color);
   map.setPaintProperty('mood', 'fill-opacity', mood.opacity);
@@ -326,12 +327,9 @@ export function updateRays(map: MlMap, origin: { lat: number; lng: number }, tim
 /** Building shadows for what's on screen, cleared when zoomed out or the sun is down; terrain shadow follows the sun and fades out at night. */
 export function updateShadows(map: MlMap, sun: { azimuth: number; altitude: number }) {
   if (map.getLayer('terrain-shadow')) {
-    // Full strength once the sun is a few degrees up, gone by the time it sets.
-    const k = Math.min(1, Math.max(0, sun.altitude / 4));
-    map.setPaintProperty('terrain-shadow', 'hillshade-illumination-direction', sun.azimuth);
-    map.setPaintProperty('terrain-shadow', 'hillshade-illumination-altitude', Math.min(90, Math.max(MIN_SHADOW_ALT, sun.altitude)));
-    map.setPaintProperty('terrain-shadow', 'hillshade-exaggeration', 0.6 * k);
-    map.setLayoutProperty('terrain-shadow', 'visibility', k > 0 && !hiddenLayers.has('terrain-shadow') ? 'visible' : 'none');
+    const up = sun.altitude > 0;
+    if (up) setTerrainShadowSun(map, sun);
+    map.setLayoutProperty('terrain-shadow', 'visibility', up && !hiddenLayers.has('terrain-shadow') ? 'visible' : 'none');
   }
   if (map.getZoom() < SHADOW_ZOOM || sun.altitude <= 0) return setData(map, 'shadows', empty());
   const layers = buildingLayerIds(map).filter((id) => map.getLayer(id));
