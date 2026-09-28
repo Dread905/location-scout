@@ -1,8 +1,8 @@
 // Export one Atlas Photo city page (public schema.org data) as a GeoJSON bundle
 // for POST /api/import. Posts of the same place are merged into one spot.
-// Usage: node scripts/atlas-export.mjs australia/new-south-wales/bathurst > data/bathurst.geojson
-const city = process.argv[2];
-if (!city) throw new Error('usage: atlas-export.mjs <country/region/city>');
+// Usage: node scripts/atlas-export.mjs australia/new-south-wales/bathurst [more cities...] > data/bathurst.geojson
+const cities = process.argv.slice(2);
+if (!cities.length) throw new Error('usage: atlas-export.mjs <country/region/city>...');
 
 const ld = async (url) => {
   const html = await (await fetch(url)).text();
@@ -11,8 +11,10 @@ const ld = async (url) => {
 };
 
 const posts = [];
-const list = (await ld(`https://atlasphoto.app/photo-spots/${city}`))
-  .find((x) => x['@type'] === 'ItemList').itemListElement;
+const list = [];
+for (const city of cities) {
+  list.push(...(await ld(`https://atlasphoto.app/photo-spots/${city}`)).find((x) => x['@type'] === 'ItemList').itemListElement);
+}
 for (const it of list) {
   const d = await ld(it.url);
   const a = d.find((x) => x['@type'] === 'TouristAttraction') ?? {};
