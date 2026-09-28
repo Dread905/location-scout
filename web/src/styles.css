@@ -313,6 +313,52 @@ input[type='checkbox'], input[type='radio'] { width: auto; accent-color: var(--a
 .facing-handle { width: 18px; height: 18px; border-radius: 50%; background: rgba(245, 166, 35, 0.35); border: 3px solid var(--accent); cursor: grab; }
 .facing-handle--unset { opacity: 0.5; border-style: dashed; }
 
+.sun-anchor-crosshair {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  touch-action: none;
+  user-select: none;
+  filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.8));
+  transition: transform 0.1s ease;
+}
+.sun-anchor-crosshair:active {
+  cursor: grabbing;
+}
+.sun-anchor-crosshair:focus,
+.sun-anchor-crosshair:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 4px;
+  box-shadow: 0 0 0 4px rgba(245, 166, 35, 0.5), 0 0 14px rgba(255, 210, 63, 0.9);
+}
+.sun-anchor-crosshair__icon {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.sun-anchor-crosshair__ring {
+  fill: rgba(245, 166, 35, 0.2);
+  stroke: var(--accent);
+  stroke-width: 2px;
+}
+.sun-anchor-crosshair__dot {
+  fill: #ffd23f;
+  stroke: #0e1014;
+  stroke-width: 1px;
+}
+.sun-anchor-crosshair__line {
+  stroke: var(--accent);
+  stroke-width: 2px;
+  stroke-linecap: round;
+}
+
+
 .editor-form label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 10px; }
 .editor-form label > input, .editor-form label > select, .editor-form label > textarea { margin-top: 4px; }
 .editor-form__row { display: grid; grid-template-columns: 1fr 1fr 1.3fr; gap: 8px; }
