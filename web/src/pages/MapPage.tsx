@@ -26,6 +26,13 @@ import SpotEditor, { SpotDraft } from '../components/SpotEditor.js';
 import PlaceEditor, { draftToPlace, PlaceDraft, placeToDraft } from '../components/PlaceEditor.js';
 import { emptyGoodTimes } from '../components/GoodTimesEditor.js';
 import DayStrip from '../components/DayStrip.js';
+import {
+  Coordinate,
+  defaultSunAnchorAdapter,
+  handleSunAnchorPlacementClick,
+  resolveDisplayOrigin,
+  SunAnchorController,
+} from '../map/sunAnchor.js';
 
 type Selection = { type: 'spot' | 'place' | 'candidate'; id: string } | null;
 type Editing = { type: 'spot'; draft: SpotDraft } | { type: 'place'; draft: PlaceDraft } | null;
@@ -61,13 +68,30 @@ export default function MapPage({ user }: { user: User | null }) {
   const [error, setError] = useState('');
   const [selected, setSelected] = useState<Selection>(null);
   const [editing, setEditing] = useState<Editing>(null);
-  const [mode, setMode] = useState<'browse' | 'pick-spot' | 'draw'>('browse');
+  const [mode, setMode] = useState<'browse' | 'pick-spot' | 'draw' | 'anchor'>('browse');
+  const [sunAnchor, setSunAnchor] = useState<Coordinate | null>(null);
   const [terrain, setTerrainOn] = useState(false);
   const [goodOnly, setGoodOnly] = useState(false);
   const [centre, setCentre] = useState({ lat: -33.419, lng: 149.577 });
   const [view, setView] = useState(0); // bumps on moveend, for zoom-scaled geometry and shadows
   const [params, setParams] = useSearchParams();
   const { time } = useMapTime();
+
+  const sunAnchorController = useRef<SunAnchorController | null>(null);
+  if (!sunAnchorController.current) {
+    sunAnchorController.current = new SunAnchorController(defaultSunAnchorAdapter);
+  }
+
+  useEffect(() => {
+    sunAnchorController.current?.sync(map, sunAnchor, (coord) => setSunAnchor(coord));
+  }, [map, sunAnchor?.lat, sunAnchor?.lng]);
+
+  useEffect(() => {
+    return () => {
+      sunAnchorController.current?.destroy();
+      sunAnchorController.current = null;
+    };
+  }, []);
 
   // Phase 3: live feeds, each behind its own toggle so nothing polls unasked.
   // Layer visibility: one source of truth for the legend and the chips.
@@ -350,12 +374,18 @@ export default function MapPage({ user }: { user: User | null }) {
     if (map) updateWedges(map, shownSpots, (s) => goodNow(s, time), highlight);
   }, [view]);
 
-  const origin = spotDraft ?? selectedSpot ?? centre;
+  const displayOrigin = resolveDisplayOrigin({
+    sunAnchor,
+    spotDraft,
+    selectedSpot,
+    viewportCentre: centre,
+  });
   useEffect(() => {
     if (!map) return;
-    updateMood(map, sunPos(time, origin.lat, origin.lng));
-    updateRays(map, origin, time);
-  }, [map, time, origin.lat, origin.lng, view]);
+    updateMood(map, sunPos(time, centre.lat, centre.lng));
+    updateRays(map, displayOrigin, time);
+  }, [map, time, centre.lat, centre.lng, displayOrigin.lat, displayOrigin.lng, view]);
+
 
   // Shadows: throttled, on moveend and on time change.
   const shadowTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -418,8 +448,15 @@ export default function MapPage({ user }: { user: User | null }) {
   onClick.current = (e) => {
     if (!map) return;
     const { lat, lng } = e.lngLat;
+    const placement = handleSunAnchorPlacementClick(mode, { lat, lng });
+    if (placement.consumed) {
+      setSunAnchor(placement.newAnchor!);
+      setMode(placement.nextMode ?? 'browse');
+      return;
+    }
     if (mode === 'pick-spot') {
       setMode('browse');
+
       setSelected(null);
       setEditing({ type: 'spot', draft: newSpot(lat, lng) });
       focus(lng, lat);
@@ -564,7 +601,15 @@ export default function MapPage({ user }: { user: User | null }) {
         </div>
       )}
       {followNote && !follow && <div className="maptoast">{followNote}</div>}
-      {mode !== 'browse' && <div className="maptoast">{mode === 'pick-spot' ? 'Click the map to place the spot' : 'Click the map to add outline points'}</div>}
+      {mode !== 'browse' && (
+        <div className="maptoast">
+          {mode === 'pick-spot'
+            ? 'Click the map to place the spot'
+            : mode === 'anchor'
+            ? 'Click the map to place the sun anchor'
+            : 'Click the map to add outline points'}
+        </div>
+      )}
 
       <Legend map={map} vis={vis} onToggle={toggle} />
       <NearbyList planes={planesOn ? planeData : null} trains={trainsOn ? trainData : null} centre={centre}
@@ -588,6 +633,26 @@ export default function MapPage({ user }: { user: User | null }) {
         <button className={`chip${trainsOn ? ' active' : ''}`} onClick={() => toggle('trains')} title="Live passenger train positions, refreshed every 20s (needs a TfNSW key)">🚆 Trains</button>
         <button className={`chip${weatherOn ? ' active' : ''}`} onClick={() => toggle('weather')} title="Rain radar (RainViewer, recent past only) and the forecast at the map centre for the map time">🌦 Weather</button>
         <button className={`chip${candidatesOn ? ' active' : ''}`} onClick={() => toggle('candidates')} title="OpenStreetMap viewpoints, ruins and other candidates">📍 Candidates</button>
+        <button
+          className={`chip${mode === 'anchor' ? ' active' : ''}`}
+          onClick={() => setMode((m) => (m === 'anchor' ? 'browse' : 'anchor'))}
+          title="Place sun anchor crosshair on map"
+        >
+          ☀️ Sun anchor
+        </button>
+        {sunAnchor && (
+          <button
+            className="chip"
+            onClick={() => {
+              setSunAnchor(null);
+              setMode((m) => (m === 'anchor' ? 'browse' : m));
+            }}
+            title="Clear sun anchor and follow camera"
+          >
+            Follow camera
+          </button>
+        )}
+
         {user && !editing && (
           <>
             <button className={`chip${mode === 'pick-spot' ? ' active' : ''}`} onClick={() => setMode(mode === 'pick-spot' ? 'browse' : 'pick-spot')}>+ Spot</button>
@@ -670,10 +735,11 @@ export default function MapPage({ user }: { user: User | null }) {
           {radarFrame?.nowcast && <span className="wxpill__muted">· radar nowcast</span>}
         </div>
       )}
-      <TimeBar lat={origin.lat} lng={origin.lng} />
+      <TimeBar lat={displayOrigin.lat} lng={displayOrigin.lng} />
     </div>
   );
 }
+
 
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
