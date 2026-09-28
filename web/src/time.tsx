@@ -37,6 +37,8 @@ export function useMapTime(): MapTime {
 }
 
 /** `HH:MM` in local time. */
-export const hhmm = (d: Date) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+export const hhmm = (d: Date) => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
+/** 24h HH:mm for machine values (time inputs, local ISO strings). */
+export const hhmm24 = (d: Date) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 /** `YYYY-MM-DD` in local time, for <input type="date">. */
 export const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
