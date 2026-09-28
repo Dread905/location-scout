@@ -34,6 +34,9 @@ If event-scout runs in its own compose stack, either put both on a shared extern
 | `TFNSW_API_KEY` | — | TfNSW Open Data key, for the trains feed (phase 3). |
 | `EVENT_SCOUT_URL` | — | Base URL of an event-scout instance, for nearby events and busyness (phase 3). |
 | `ADSB_URL` | `https://api.adsb.lol` | Planes feed base URL; point at airplanes.live if preferred (phase 3). |
+| `OVERPASS_ENDPOINTS` | `https://overpass-api.de/api/interpreter` | Comma-separated ordered list of Overpass API endpoints/mirrors for rail and candidate spot ingestion. |
+| `OVERPASS_URL` | — | Legacy fallback for a single Overpass endpoint URL (superseded by `OVERPASS_ENDPOINTS`). |
+| `OVERPASS_PACE_MS` | `1000` | Minimum request pacing interval (ms) enforced across all sequential Overpass requests in a refresh. |
 | `TZ` | `Australia/Sydney` | Affects what counts as "today" and daily task timing. |
 
 ## API
@@ -101,3 +104,14 @@ Phase 3 — live feeds and ingestion (all follow the same auth rules above):
 ### Reaching event-scout from a container (Phase 3)
 
 Point `EVENT_SCOUT_URL` at it: either put both compose stacks on a shared external Docker network and use event-scout's service name, or use `http://host.docker.internal:<port>` if event-scout runs on the host outside Docker.
+
+### Overpass Ingestion and Operational Limits
+
+Location Scout uses OpenStreetMap Overpass data for the **Rail network** and **Candidate spots** layers. To keep requests polite and reliable against shared public infrastructure:
+
+- **Configurable Endpoints**: Set `OVERPASS_ENDPOINTS` to an ordered, comma-separated list of working Overpass instances (e.g. `https://overpass-api.de/api/interpreter, https://maps.mail.ru/osm/tools/overpass/api/interpreter`). The canonical endpoint is tried first by default. If a mirror fails with transient errors (network drop, timeout, 429 rate limit, or 5xx server error), ingestion fails over sequentially with capped backoff and jitter. Non-retryable 4xx errors (e.g. 400 bad query) and parse failures on 200 responses abort immediately without retry.
+- **Request Pacing & No Parallel Requests**: To remain courteous to shared public infrastructure, Location Scout enforces a conservative non-zero minimum interval (`OVERPASS_PACE_MS`, defaulting to 1000 ms) across every Overpass request made during a refresh, including normal successful requests across geographic tiles and candidate categories. Requests are never executed in parallel.
+- **Sequential Tiling**: Scouting areas larger than 50 km in span are automatically divided into bounded geographic sub-tiles processed sequentially. This prevents oversized requests from timing out upstream while deduplicating features across tiles.
+- **Candidate Category Splitting**: Candidate spot queries are split into semantic categories (`viewpoints`, `ruins`, `landmarks`, `disused_stations`, `abandoned_disused`). If an expensive regex category encounters an upstream timeout, other categories are still imported and the task panel identifies the specific failing category and host.
+- **Safe Diagnostics & Last-Known-Good Data**: Errors logged and displayed in the background task panel are redacted of query bodies and credentials, providing concise error classifications (`network`, `timeout`, `http`, `parse`), attempt counts, hostnames, and actionable remediation hints. If a refresh fails completely, previous rail GeoJSON cache and candidate spots are preserved rather than overwritten with partial or empty data.
+- **Operational Rules**: Use reasonable scouting area radii (e.g. up to 100 km). Do not schedule or trigger repeated manual refreshes while an ingestion task is running; background tasks utilize task locking to prevent concurrent runs.

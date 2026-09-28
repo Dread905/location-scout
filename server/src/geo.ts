@@ -31,6 +31,48 @@ export function inBbox(b: Bbox, lat: number, lon: number): boolean {
   return lat >= b.south && lat <= b.north && lon >= b.west && lon <= b.east;
 }
 
+export const DEFAULT_MAX_TILE_KM = 50;
+
+/**
+ * Splits a bounding box into smaller bounded tiles if either dimension exceeds maxTileKm.
+ * Tiles cover the original bounding box completely without gaps, ordered sequentially.
+ */
+export function tileBbox(bbox: Bbox, maxTileKm = DEFAULT_MAX_TILE_KM): Bbox[] {
+  const midLat = (bbox.south + bbox.north) / 2;
+  const heightKm = ((bbox.north - bbox.south) * M_PER_DEG_LAT) / 1000;
+  const widthKm = ((bbox.east - bbox.west) * mPerDegLon(midLat)) / 1000;
+
+  const numTilesY = Math.max(1, Math.ceil(heightKm / maxTileKm));
+  const numTilesX = Math.max(1, Math.ceil(widthKm / maxTileKm));
+
+  if (numTilesX === 1 && numTilesY === 1) {
+    return [bbox];
+  }
+
+  const stepLat = (bbox.north - bbox.south) / numTilesY;
+  const stepLon = (bbox.east - bbox.west) / numTilesX;
+
+  const tiles: Bbox[] = [];
+  for (let y = 0; y < numTilesY; y++) {
+    const south = bbox.south + y * stepLat;
+    const north = y === numTilesY - 1 ? bbox.north : bbox.south + (y + 1) * stepLat;
+    for (let x = 0; x < numTilesX; x++) {
+      const west = bbox.west + x * stepLon;
+      const east = x === numTilesX - 1 ? bbox.east : bbox.west + (x + 1) * stepLon;
+      tiles.push({ south, north, west, east });
+    }
+  }
+  return tiles;
+}
+
+/**
+ * Generates bounded tiles covering a circular radius around a point.
+ */
+export function tileArea(lat: number, lon: number, radiusKm: number, maxTileKm = DEFAULT_MAX_TILE_KM): Bbox[] {
+  const bbox = bboxFromRadius(lat, lon, radiusKm);
+  return tileBbox(bbox, maxTileKm);
+}
+
 /** Parse `"south,west,north,east"`. Throws on anything else. */
 export function parseBbox(raw: string): Bbox {
   const parts = raw.split(',').map(Number);

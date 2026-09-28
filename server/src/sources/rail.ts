@@ -3,61 +3,47 @@
  * plus industrial/mine sites near rail, refreshed weekly and cached as
  * GeoJSON in kv. Two separate Overpass queries (lines, then sites) rather
  * than one mixed `out geom`/`out center` query — simpler, and it's cached anyway.
+ *
+ * Uses resilient, sequential Overpass client with area tiling, deduplication,
+ * and last-known-good cache preservation.
  */
 import { Db } from '../db.js';
-import { Bbox, bboxFromRadius } from '../geo.js';
+import { Bbox, tileArea } from '../geo.js';
+import { DEFAULT_OVERPASS_ENDPOINT, OverpassClient, OverpassError } from './overpass.js';
 import type { TaskLog } from '../tasks/registry.js';
 
-export const OVERPASS_URL = process.env.OVERPASS_URL ?? 'https://overpass-api.de/api/interpreter';
-const FETCH_TIMEOUT_MS = 25_000;
+export const OVERPASS_URL = process.env.OVERPASS_URL ?? DEFAULT_OVERPASS_ENDPOINT;
 const RAIL_KV_KEY = 'rail:geojson';
 
-interface OverpassWay {
+export interface OverpassWay {
   type: 'way';
   id: number;
   tags?: Record<string, string>;
   geometry?: { lat: number; lon: number }[];
 }
-interface OverpassNode {
+export interface OverpassNode {
   type: 'node';
   id: number;
   lat: number;
   lon: number;
   tags?: Record<string, string>;
 }
-interface OverpassCenterWay {
+export interface OverpassCenterWay {
   type: 'way';
   id: number;
   tags?: Record<string, string>;
   center?: { lat: number; lon: number };
 }
-type OverpassElement = OverpassWay | OverpassNode | OverpassCenterWay;
-
-async function overpassFetch(query: string): Promise<{ elements: OverpassElement[] }> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch(OVERPASS_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `data=${encodeURIComponent(query)}`,
-      signal: controller.signal,
-    });
-    if (!res.ok) throw new Error(`Overpass returned ${res.status}`);
-    return (await res.json()) as { elements: OverpassElement[] };
-  } finally {
-    clearTimeout(timer);
-  }
-}
+export type OverpassElement = OverpassWay | OverpassNode | OverpassCenterWay;
 
 const bboxClause = (b: Bbox) => `${b.south},${b.west},${b.north},${b.east}`;
 
-function railQuery(bboxes: Bbox[]): string {
+export function railQuery(bboxes: Bbox[]): string {
   const ways = bboxes.map((b) => `way["railway"="rail"](${bboxClause(b)});`).join('\n');
   return `[out:json][timeout:60];(${ways});out geom;`;
 }
 
-function industrialQuery(bboxes: Bbox[]): string {
+export function industrialQuery(bboxes: Bbox[]): string {
   const clauses = bboxes.flatMap((b) => [
     `node["landuse"="industrial"](${bboxClause(b)});`,
     `way["landuse"="industrial"](${bboxClause(b)});`,
@@ -107,14 +93,59 @@ export function mapIndustrialElements(elements: OverpassElement[]): GeoJSON.Feat
 
 export interface RailArea { lat: number; lng: number; radiusKm: number }
 
-/** Fetch rail lines + industrial sites for every area, as one FeatureCollection. */
-export async function fetchRailNetwork(areas: RailArea[]): Promise<GeoJSON.FeatureCollection> {
-  const bboxes = areas.map((a) => bboxFromRadius(a.lat, a.lng, a.radiusKm));
-  const [rail, industrial] = await Promise.all([
-    overpassFetch(railQuery(bboxes)).then((r) => mapRailElements(r.elements)),
-    overpassFetch(industrialQuery(bboxes)).then((r) => mapIndustrialElements(r.elements)),
-  ]);
-  return { type: 'FeatureCollection', features: [...rail, ...industrial] };
+export interface FetchRailNetworkOptions {
+  client?: OverpassClient;
+  maxTileKm?: number;
+}
+
+/**
+ * Fetch rail lines + industrial sites for every area, as one FeatureCollection.
+ * - Slices large areas into bounded sequential tiles.
+ * - Processes rail lines and industrial sites serially.
+ * - Deduplicates features across tiles.
+ */
+export async function fetchRailNetwork(
+  areas: RailArea[],
+  options: FetchRailNetworkOptions = {}
+): Promise<GeoJSON.FeatureCollection> {
+  const client = options.client ?? new OverpassClient();
+  const maxTileKm = options.maxTileKm;
+  const tiles: Bbox[] = areas.flatMap((a) => tileArea(a.lat, a.lng, a.radiusKm, maxTileKm));
+
+  const railElements: OverpassElement[] = [];
+  const seenWayIds = new Set<number>();
+
+  // Fetch rail lines serially per tile
+  for (const tile of tiles) {
+    const ql = railQuery([tile]);
+    const res = await client.query<OverpassElement>(ql, { category: 'rail' });
+    for (const el of res.elements) {
+      if (el.type === 'way' && !seenWayIds.has(el.id)) {
+        seenWayIds.add(el.id);
+        railElements.push(el);
+      }
+    }
+  }
+
+  const industrialElements: OverpassElement[] = [];
+  const seenSiteKeys = new Set<string>();
+
+  // Fetch industrial/mine sites serially per tile
+  for (const tile of tiles) {
+    const ql = industrialQuery([tile]);
+    const res = await client.query<OverpassElement>(ql, { category: 'industrial' });
+    for (const el of res.elements) {
+      const key = `${el.type}/${el.id}`;
+      if (!seenSiteKeys.has(key)) {
+        seenSiteKeys.add(key);
+        industrialElements.push(el);
+      }
+    }
+  }
+
+  const railFeatures = mapRailElements(railElements);
+  const industrialFeatures = mapIndustrialElements(industrialElements);
+  return { type: 'FeatureCollection', features: [...railFeatures, ...industrialFeatures] };
 }
 
 export function getCachedRail(db: Db): GeoJSON.FeatureCollection {
@@ -129,11 +160,31 @@ export function railLinesFromGeoJson(fc: GeoJSON.FeatureCollection): { ref: stri
     .map((f) => ({ ref: String(f.properties?.id ?? ''), coords: f.geometry.coordinates as [number, number][] }));
 }
 
-export async function runRailTask(db: Db, areas: RailArea[], log: TaskLog): Promise<{ ok: boolean; message: string }> {
-  const fc = await fetchRailNetwork(areas);
-  db.setKv(RAIL_KV_KEY, JSON.stringify(fc));
-  const lines = fc.features.filter((f) => f.geometry?.type === 'LineString').length;
-  const sites = fc.features.length - lines;
-  log(`${lines} rail ways, ${sites} industrial/mine sites`);
-  return { ok: true, message: `${lines} rail ways, ${sites} sites` };
+export interface RunRailTaskOptions {
+  client?: OverpassClient;
+  maxTileKm?: number;
+}
+
+export async function runRailTask(
+  db: Db,
+  areas: RailArea[],
+  log: TaskLog,
+  options: RunRailTaskOptions = {}
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    const fc = await fetchRailNetwork(areas, {
+      client: options.client,
+      maxTileKm: options.maxTileKm,
+    });
+    db.setKv(RAIL_KV_KEY, JSON.stringify(fc));
+    const lines = fc.features.filter((f) => f.geometry?.type === 'LineString').length;
+    const sites = fc.features.length - lines;
+    log(`${lines} rail ways, ${sites} industrial/mine sites`);
+    return { ok: true, message: `${lines} rail ways, ${sites} sites` };
+  } catch (err) {
+    // Preserve existing cached rail GeoJSON: do not overwrite RAIL_KV_KEY
+    const message = (err as Error).message;
+    log(`rail network task failed: ${message}`);
+    return { ok: false, message };
+  }
 }
