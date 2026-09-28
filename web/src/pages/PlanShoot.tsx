@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { api, Plane, Settings, Spot, TrainPass } from '../api.js';
 import { haversineKm } from '../map/geo.js';
 import { Alignment, alignments, moonPhase, nextGoodWindow, PHASE_LABEL, Phase, sunriseSunset } from '../map/sun.js';
-import { hhmm, ymd } from '../time.js';
+import { hhmm, hhmm24, ymd } from '../time.js';
 import DayStrip from '../components/DayStrip.js';
 import { bestWindows, buildingShadeAt, lightTimeline, WINDOW_LABEL, type ShadeTest, type Step, type WindowKind } from '../map/shootPlan.js';
 import { terrainShadeForPoint } from '../map/demPoint.js';
@@ -41,7 +41,7 @@ function storedCriteria(): Criterion[] | null {
 const dayLabel = (d: Date) => d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
 const when = (d: Date) => `${dayLabel(d)} ${hhmm(d)}`;
 const parseYmd = (s: string | null) => { const [y, m, d] = (s ?? '').split('-').map(Number); return y && m && d ? new Date(y, m - 1, d) : null; };
-const localIso = (d: Date) => `${ymd(d)}T${hhmm(d)}`;
+const localIso = (d: Date) => `${ymd(d)}T${hhmm24(d)}`;
 const parseLocal = (s: string | null) => { if (!s) return null; const d = new Date(s); return Number.isNaN(d.getTime()) ? null : d; };
 const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
 const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
@@ -62,7 +62,7 @@ function WeatherStrip({ hourly, day }: { hourly: WeatherHour[]; day: Date }) {
   return (
     <div className="wxstrip" aria-label="Hourly cloud, rain and wind">
       {ws.map((w, h) => (
-        <div key={h} className="wxstrip__cell" title={w ? `${String(h).padStart(2, '0')}:00 · ${Math.round(w.cloudPct)}% cloud · ${Math.round(w.precipProbPct)}% rain · ${Math.round(w.windKmh)} km/h` : 'no data'}>
+        <div key={h} className="wxstrip__cell" title={w ? `${h % 12 || 12}${h < 12 ? 'am' : 'pm'} · ${Math.round(w.cloudPct)}% cloud · ${Math.round(w.precipProbPct)}% rain · ${Math.round(w.windKmh)} km/h` : 'no data'}>
           <div className="wxstrip__cloud" style={{ opacity: w ? 0.1 + (w.cloudPct / 100) * 0.9 : 0 }} />
           <div className="wxstrip__rain"><div style={{ height: `${w ? w.precipProbPct : 0}%` }} /></div>
           <div className="wxstrip__wind">{w ? Math.round(w.windKmh) : ''}</div>
@@ -343,7 +343,7 @@ export default function PlanShoot() {
                   onClick={() => pick(new Date(d.getFullYear(), d.getMonth(), d.getDate(), focus.getHours(), focus.getMinutes()))}>{dayLabel(d)}</button>
               ))}
             </div>
-            <label className="plan__field">Time <input type="time" value={hhmm(focus)} onChange={(e) => { const [h, mi] = e.target.value.split(':').map(Number); if (!Number.isNaN(h)) pick(new Date(focus.getFullYear(), focus.getMonth(), focus.getDate(), h, mi)); }} /></label>
+            <label className="plan__field">Time <input type="time" value={hhmm24(focus)} onChange={(e) => { const [h, mi] = e.target.value.split(':').map(Number); if (!Number.isNaN(h)) pick(new Date(focus.getFullYear(), focus.getMonth(), focus.getDate(), h, mi)); }} /></label>
             <h3>Light</h3>
             <DayStrip lat={plan.lat} lng={plan.lng} time={focus} />
             {!shadeReady ? <p className="hint">Working out sun and shade…</p> : <LightStrip steps={daySteps} day={focusDay} />}
