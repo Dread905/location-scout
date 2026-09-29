@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  bearingDeg, cumulativeKm, emptyFeedData, isServiceActiveOn, nextPasses, parseGtfsTime, PATH_BACK_KM, predictTrainPositions, shapeSlice, TrainsFeedData, vehicleExtras,
+  bearingDeg, buildPointPassesResponse, clampPassHours, cumulativeKm, emptyFeedData, isServiceActiveOn, nextPasses, parseGtfsTime,
+  parsePointPassRequest, PATH_BACK_KM, predictTrainPositions, shapeSlice, TrainsFeedData, vehicleExtras,
 } from '../src/feeds/trains.js';
 
 test('parseGtfsTime: handles times past midnight (>24:00:00)', () => {
@@ -135,4 +136,30 @@ test('vehicleExtras: bearing/speed/carriages, with protobuf zero defaults treate
   assert.deepEqual(vehicleExtras({ position: { bearing: 0, speed: 0 } }), {});
   assert.deepEqual(vehicleExtras({ position: { bearing: -90 } }), { bearing: 270 });
   assert.deepEqual(vehicleExtras(null), {});
+});
+
+test('parsePointPassRequest: requires finite in-range coordinates and clamps hours to 1..24', () => {
+  assert.deepEqual(parsePointPassRequest({ lat: '-33.05', lng: '150', hours: '0' }), { ok: true, point: { lat: -33.05, lng: 150 }, hours: 1 });
+  assert.deepEqual(parsePointPassRequest({ lat: '-33.05', lng: '150', hours: '48' }), { ok: true, point: { lat: -33.05, lng: 150 }, hours: 24 });
+  assert.deepEqual(parsePointPassRequest({ lat: '-33.05', lng: '150', hours: 'nope' }), { ok: true, point: { lat: -33.05, lng: 150 }, hours: 6 });
+  assert.deepEqual(parsePointPassRequest({ lat: 'Infinity', lng: '150' }), { ok: false, error: 'lat and lng are required' });
+  assert.deepEqual(parsePointPassRequest({ lat: '-91', lng: '150' }), { ok: false, error: 'lat and lng are required' });
+});
+
+test('buildPointPassesResponse: configured, not configured, and no-pass states', () => {
+  const feed = fixture();
+  const now = new Date('2026-01-05T06:00:00');
+  assert.deepEqual(buildPointPassesResponse(false, feed, { lat: -33.05, lng: 150 }, 6, now), { configured: false, passes: [] });
+
+  const noPasses = buildPointPassesResponse(true, feed, { lat: -33.05, lng: 152 }, 6, now);
+  assert.equal(noPasses.configured, true);
+  assert.deepEqual(noPasses.passes, []);
+
+  const withPasses = buildPointPassesResponse(true, feed, { lat: -33.05, lng: 150 }, 6, now);
+  assert.equal(withPasses.configured, true);
+  assert.deepEqual(withPasses.passes.map((p) => ({ tripId: p.tripId, route: p.route, headsign: p.headsign })), [
+    { tripId: 'T1', route: 'BB', headsign: 'Bathurst' },
+  ]);
+  const at = new Date(withPasses.passes[0].at);
+  assert.equal(`${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`, '09:05');
 });

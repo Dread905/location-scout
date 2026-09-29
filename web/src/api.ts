@@ -296,6 +296,8 @@ export const api = {
   // --- trains ---
   trainsStatus: () => fetch('/api/trains/status').then((r) => json<TrainsStatus>(r)),
   trains: (at?: Date) => fetch(`/api/trains${at ? `?at=${at.toISOString()}` : ''}`).then((r) => json<{ configured: boolean; positions: TrainPosition[] }>(r)),
+  trainPassesAt: (lat: number, lng: number, hours = 6) =>
+    fetch(`/api/trains/passes?lat=${lat}&lng=${lng}&hours=${hours}`).then((r) => json<{ configured: boolean; passes: TrainPass[] }>(r)),
   spotTrains: (spotId: string, hours = 6) => fetch(`/api/spots/${spotId}/trains?hours=${hours}`).then((r) => json<{ configured: boolean; passes: TrainPass[] }>(r)),
 
   // --- Event Scout ---

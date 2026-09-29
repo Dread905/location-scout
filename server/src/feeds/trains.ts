@@ -270,6 +270,24 @@ export function predictTrainPositions(feed: TrainsFeedData, at: Date, realtime: 
 }
 
 export interface TrainPass { tripId: string; routeId: string; route: string; headsign: string; at: Date }
+export interface TrainPassResponse { configured: boolean; passes: (Omit<TrainPass, 'at'> & { at: string })[] }
+
+export function clampPassHours(raw: unknown, fallback = 6): number {
+  const n = Number(raw ?? fallback);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(1, Math.min(24, n));
+}
+
+export function parsePointPassRequest(query: { lat?: unknown; lng?: unknown; hours?: unknown }):
+  | { ok: true; point: LatLng; hours: number }
+  | { ok: false; error: string } {
+  const lat = Number(query.lat);
+  const lng = Number(query.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+    return { ok: false, error: 'lat and lng are required' };
+  }
+  return { ok: true, point: { lat, lng }, hours: clampPassHours(query.hours) };
+}
 
 /** Trips passing within 2km of `spot` in the next `hours`, by scheduled time (realtime delay isn't projected forward). */
 export function nextPasses(feed: TrainsFeedData, spot: LatLng, hours: number, now: Date, maxOffKm = 2): TrainPass[] {
@@ -308,6 +326,12 @@ export function nextPasses(feed: TrainsFeedData, spot: LatLng, hours: number, no
     }
   }
   return out.sort((a, b) => a.at.getTime() - b.at.getTime());
+}
+
+export function buildPointPassesResponse(configured: boolean, feed: TrainsFeedData, point: LatLng, hours: number, now = new Date()): TrainPassResponse {
+  if (!configured) return { configured: false, passes: [] };
+  const passes = nextPasses(feed, point, clampPassHours(hours), now, 0.15).map((p) => ({ ...p, at: p.at.toISOString() }));
+  return { configured: true, passes };
 }
 
 // --- impure: fetching, parsing and storing ------------------------------------------

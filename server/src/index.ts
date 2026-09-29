@@ -21,7 +21,7 @@ import { fetchPlanes } from './feeds/planes.js';
 import { fetchWeather } from './feeds/weather.js';
 import { fetchBuildings } from './sources/osm.js';
 import {
-  combinedFeedData, combinedRealtime, nextPasses, predictTrainPositions, tripCount, TRAIN_FEEDS,
+  buildPointPassesResponse, combinedFeedData, combinedRealtime, emptyFeedData, nextPasses, parsePointPassRequest, predictTrainPositions, tripCount, TRAIN_FEEDS,
 } from './feeds/trains.js';
 import { nearbyFor } from './feeds/eventScout.js';
 import { getCachedRail, requestTilesForUnsnapped, trackGraphFor } from './sources/rail.js';
@@ -714,6 +714,13 @@ app.get('/api/trains', async (req, res, next) => {
     requestTilesForUnsnapped(db, positions);
     res.json({ configured: true, positions });
   } catch (err) { next(err); }
+});
+
+app.get('/api/trains/passes', (req, res) => {
+  const parsed = parsePointPassRequest(req.query);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+  const key = tfnswKey(db);
+  res.json(buildPointPassesResponse(Boolean(key), key ? combinedFeedData(db) : emptyFeedData(), parsed.point, parsed.hours, new Date()));
 });
 
 app.get('/api/spots/:id/trains', (req, res) => {
