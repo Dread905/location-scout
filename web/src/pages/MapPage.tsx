@@ -18,6 +18,7 @@ import { Legend } from '../components/Legend.js';
 import { NearbyList } from '../components/NearbyList.js';
 import { attachGlance, attachThumbLoader, GLANCE_LAYERS } from '../map/spotGlance.js';
 import { CATEGORIES, groupLayers, loadVisibility, saveVisibility, type Visibility } from '../map/legend.js';
+import { applyBaseRailHighlight, effectiveRailOn, restoreBaseRailHighlight, type BaseRailPaintSnapshot } from '../map/baseRailHighlight.js';
 import { deadReckon } from '../map/planes.js';
 import { useMapTime } from '../time.js';
 import TimeBar from '../components/TimeBar.js';
@@ -75,6 +76,8 @@ export default function MapPage({ user }: { user: User | null }) {
   useEffect(() => saveVisibility(vis), [vis]);
   const toggle = (key: string, on = !vis[key]) => setVis((v) => ({ ...v, [key]: on }));
   const { planes: planesOn, rail: railOn, trains: trainsOn, candidates: candidatesOn, imagery, weather: weatherOn } = vis;
+  const railEffectiveOn = effectiveRailOn(railOn, trainsOn);
+  const baseRailPaint = useRef<BaseRailPaintSnapshot[] | null>(null);
   const [rail, setRail] = useState<GeoJSON.FeatureCollection | null>(null);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [planeData, setPlaneData] = useState<Plane[]>([]);
@@ -123,7 +126,25 @@ export default function MapPage({ user }: { user: User | null }) {
 
   // Rail lines: fetched once for the (toggleable) layer.
   useEffect(() => { api.rail().then(setRail).catch(() => {}); }, []);
-  useEffect(() => { if (map) { updateRail(map, rail ?? { type: 'FeatureCollection', features: [] }); setLayerVisible(map, ['rail-lines', 'rail-industrial'], railOn); } }, [map, rail, railOn]);
+  useEffect(() => { if (map) { updateRail(map, rail ?? { type: 'FeatureCollection', features: [] }); setLayerVisible(map, ['rail-lines', 'rail-industrial'], railEffectiveOn); } }, [map, rail, railEffectiveOn]);
+  useEffect(() => {
+    if (!map) return;
+    const restore = () => {
+      if (!baseRailPaint.current) return;
+      restoreBaseRailHighlight(map, baseRailPaint.current);
+      baseRailPaint.current = null;
+    };
+    const apply = () => {
+      restore();
+      if (railEffectiveOn) baseRailPaint.current = applyBaseRailHighlight(map);
+    };
+    apply();
+    map.on('style.load', apply);
+    return () => {
+      map.off('style.load', apply);
+      restore();
+    };
+  }, [map, railEffectiveOn]);
 
   // Planes: on demand, cached 10s server-side, refreshed every 15s while on and the tab is visible.
   useEffect(() => {
