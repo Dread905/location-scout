@@ -11,6 +11,7 @@ import type { Footprint } from '../map/shadows.js';
 import { CRITERIA, DEFAULT_CRITERIA, parseCriteria, railDistanceKm, recommend, weatherAt, type Criterion, type Recommendation, type WeatherHour, type WeatherResponse } from '../map/recommend.js';
 import { fetchWeather } from './planWeather.js';
 import { MAP_CENTRE_KEY } from './MapPage.js';
+import SunBearingPlanner from '../components/SunBearingPlanner.js';
 
 const ALIGN_BONUS_H = 12;
 const CROWD_LOOKUP_CAP = 50; // ponytail: one Event Scout lookup per spot; fine at personal-app scale, cap avoids hammering it on a big radius
@@ -302,6 +303,18 @@ export default function PlanShoot() {
 
       {error && <p className="status-line error">{error}</p>}
       {!spots && !error && <p className="hint">Loading…</p>}
+
+      {plan && (
+        <div className="no-print">
+          <SunBearingPlanner
+            lat={plan.lat}
+            lng={plan.lng}
+            defaultBearingDeg={plan.facingDeg}
+            label="Exact bearing planner"
+            onApplyTime={pick}
+          />
+        </div>
+      )}
 
       <nav className="tabs no-print" role="tablist">
         {TABS.map((t) => <button key={t.key} role="tab" aria-selected={tab === t.key} className={`tab${tab === t.key ? ' active' : ''}`} onClick={() => set({ tab: t.key })}>{t.label}</button>)}

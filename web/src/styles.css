@@ -273,6 +273,11 @@ input[type='checkbox'], input[type='radio'] { width: auto; accent-color: var(--a
 .maptools { position: absolute; top: 10px; left: 10px; right: 60px; z-index: 5; display: flex; gap: 6px; flex-wrap: wrap; pointer-events: none; }
 .maptools .chip { pointer-events: auto; background: rgba(23, 26, 33, 0.92); backdrop-filter: blur(6px); }
 .maptools .chip.active { background: #2b2412; }
+.sunanchor-controls { position: absolute; left: 10px; bottom: 96px; z-index: 6; display: flex; align-items: center; gap: 6px; max-width: min(560px, calc(100% - 20px));
+  background: var(--glass); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 6px; backdrop-filter: blur(6px); font-size: 12.5px; }
+.sunanchor-controls button { padding: 4px 9px; }
+.sunanchor-controls button.active { color: var(--accent); border-color: var(--accent); }
+.sunanchor-controls span { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .maptoast { position: absolute; top: 52px; left: 50%; transform: translateX(-50%); z-index: 6; background: var(--panel);
   border: 1px solid var(--accent); color: var(--accent); border-radius: var(--pill); padding: 6px 14px; font-size: 13px; }
 .maptoast.error { border-color: var(--red); color: var(--red); }
@@ -342,6 +347,10 @@ input[type='checkbox'], input[type='radio'] { width: auto; accent-color: var(--a
   height: 100%;
   overflow: visible;
 }
+.sun-anchor-crosshair__iconwrap {
+  width: 32px;
+  height: 32px;
+}
 .sun-anchor-crosshair__ring {
   fill: rgba(245, 166, 35, 0.2);
   stroke: var(--accent);
@@ -357,6 +366,60 @@ input[type='checkbox'], input[type='radio'] { width: auto; accent-color: var(--a
   stroke-width: 2px;
   stroke-linecap: round;
 }
+.sun-anchor-bearing {
+  position: absolute;
+  left: 34px;
+  top: -6px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  background: rgba(14, 16, 20, 0.9);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.65);
+  cursor: ew-resize;
+  touch-action: none;
+}
+.sun-anchor-bearing:focus,
+.sun-anchor-bearing:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 3px;
+}
+.sun-anchor-bearing__needle {
+  position: absolute;
+  left: 50%;
+  top: 4px;
+  width: 2px;
+  height: 12px;
+  transform: translateX(-50%) rotate(var(--sun-anchor-bearing, 0deg));
+  transform-origin: 50% 11px;
+  border-radius: 2px;
+  background: #ffd23f;
+  box-shadow: 0 0 0 1px #0e1014;
+}
+.sun-anchor-bearing::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 3px;
+  width: 5px;
+  height: 5px;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background: #ffd23f;
+}
+
+.sunplan { margin: 14px 0; border-top: 1px solid var(--border); padding-top: 12px; }
+.sunplan h4 { margin-top: 0; }
+.sunplan__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.sunplan__grid label { display: grid; gap: 4px; color: var(--muted); font-size: 12.5px; }
+.sunplan__results { gap: 7px; }
+.sunplan__result { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px; background: rgba(29, 33, 43, 0.62); }
+.sunplan__result strong { display: block; font-size: 13.5px; }
+.sunplan__result .hint { display: block; margin: 2px 0 0; }
+.sunplan__result button { padding: 4px 9px; white-space: nowrap; }
+.sunplan__toggle { margin-top: 8px; padding: 5px 11px; }
 
 
 .editor-form label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 10px; }
@@ -413,6 +476,10 @@ input[type='checkbox'], input[type='radio'] { width: auto; accent-color: var(--a
   .timebar__meta { width: 100%; order: 5; font-size: 11.5px; }
   /* The side panel becomes a bottom sheet, above the time bar. */
   .panel { top: auto; left: 0; right: 0; bottom: 104px; width: auto; max-height: 55%; border-radius: 14px 14px 0 0; border-width: 1px 0 0; }
+  .sunanchor-controls { left: 8px; right: 8px; bottom: 104px; max-width: none; }
+  .mapshell--panel .sunanchor-controls { display: none; }
+  .sunplan__grid { grid-template-columns: 1fr 1fr; }
+  .sunplan__result { grid-template-columns: 1fr; }
   .editor-form__row { grid-template-columns: 1fr 1fr; }
   .spotgrid { grid-template-columns: 1fr; }
   .settings .formrow { flex-wrap: wrap; }

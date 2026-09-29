@@ -13,6 +13,7 @@ import { Trains3dLayer, trainsNo3d, type Train3d } from './trains3dLayer.js';
 import { registerTerrainShadowProtocol, setBuildingShadows, setTerrainShadowSun, setTerrainShadowTerrain, SHADOW_RASTER_MAX_Z } from './terrainShadowSource.js';
 import { RADAR_MAX_NATIVE_Z } from './weather.js';
 import { moodAt, moonPos, sunPos, sunriseSunset } from './sun.js';
+import { SELECTED_BEARING_PROJECTION_SOURCE } from './sunAnchor.js';
 
 export const STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
 const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
@@ -87,6 +88,14 @@ export function initLayers(map: MlMap) {
       'line-width': ['match', ['get', 'kind'], 'sun', 4, 'moon', 3, 2],
       'line-opacity': ['case', ['get', 'up'], 0.95, 0.4],
       'line-dasharray': ['match', ['get', 'kind'], 'sunrise', ['literal', [2, 2]], 'sunset', ['literal', [2, 2]], ['literal', [1, 0]]],
+    } });
+
+  map.addSource(SELECTED_BEARING_PROJECTION_SOURCE, { type: 'geojson', data: empty() });
+  map.addLayer({ id: SELECTED_BEARING_PROJECTION_SOURCE, type: 'line', source: SELECTED_BEARING_PROJECTION_SOURCE, layout: { 'line-cap': 'round' },
+    paint: {
+      'line-color': '#ff2bd6',
+      'line-width': ['interpolate', ['linear'], ['zoom'], 8, 2.5, 16, 4.5],
+      'line-opacity': 0.95,
     } });
 
   map.addSource('draft', { type: 'geojson', data: empty() });

@@ -126,6 +126,144 @@ export function sunriseSunset(date: Date, lat: number, lng: number) {
   return { sunrise: at(t.sunrise), sunset: at(t.sunset) };
 }
 
+// --- exact bearing golden-hour planning ---------------------------------------------
+
+export type SunBearingPhase = 'sunrise' | 'sunset' | 'both';
+
+export const SUN_BEARING_SEARCH_DAYS = 365;
+export const SUN_BEARING_RESULT_PREVIEW_COUNT = 2;
+export const SUN_BEARING_RESULT_LIMIT = 8;
+export const SUN_BEARING_DEFAULT_WINDOWS = {
+  sunriseOffsetStartMin: -30,
+  sunriseOffsetEndMin: 60,
+  sunsetOffsetStartMin: -60,
+  sunsetOffsetEndMin: 30,
+} as const;
+
+export interface SunBearingPlanOptions {
+  lat: number;
+  lng: number;
+  bearingDeg: number;
+  phase: SunBearingPhase;
+  startDate: Date;
+  days: number;
+  sunriseOffsetStartMin?: number;
+  sunriseOffsetEndMin?: number;
+  sunsetOffsetStartMin?: number;
+  sunsetOffsetEndMin?: number;
+}
+
+export interface SunBearingPlanHit {
+  date: Date;
+  time: Date;
+  azimuthDeg: number;
+  altitudeDeg: number;
+  signedErrorDeg: number;
+  absoluteErrorDeg: number;
+  phase: 'sunrise' | 'sunset';
+}
+
+export function sunBearingSearchStart(today: Date): Date {
+  return new Date(today.getFullYear(), today.getMonth(), today.getDate());
+}
+
+export function displayedSunBearingHits<T>(hits: T[], expanded: boolean, previewCount = SUN_BEARING_RESULT_PREVIEW_COUNT): T[] {
+  return expanded ? hits : hits.slice(0, previewCount);
+}
+
+const MINUTE = 60_000;
+const SECOND = 1000;
+
+function normDeg(d: number): number {
+  return ((d % 360) + 360) % 360;
+}
+
+function sunPosDeg(date: Date, lat: number, lng: number): { azimuthDeg: number; altitudeDeg: number } {
+  const p = getPosition(date, lat, lng);
+  return {
+    azimuthDeg: normDeg(p.azimuth),
+    altitudeDeg: trueAltitude(p.altitude),
+  };
+}
+
+function planCandidate(time: Date, lat: number, lng: number, bearingDeg: number, phase: 'sunrise' | 'sunset'): SunBearingPlanHit {
+  const pos = sunPosDeg(time, lat, lng);
+  const signedErrorDeg = angleDiff(pos.azimuthDeg, bearingDeg);
+  return {
+    date: new Date(time.getFullYear(), time.getMonth(), time.getDate()),
+    time,
+    azimuthDeg: pos.azimuthDeg,
+    altitudeDeg: pos.altitudeDeg,
+    signedErrorDeg,
+    absoluteErrorDeg: Math.abs(signedErrorDeg),
+    phase,
+  };
+}
+
+function closestInWindow(lat: number, lng: number, bearingDeg: number, phase: 'sunrise' | 'sunset', start: number, end: number): SunBearingPlanHit | null {
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  const lo = Math.min(start, end);
+  const hi = Math.max(start, end);
+  if (hi < lo) return null;
+
+  let best: SunBearingPlanHit | null = null;
+  for (let t = lo; t <= hi; t += MINUTE) {
+    const hit = planCandidate(new Date(t), lat, lng, bearingDeg, phase);
+    if (!best || hit.absoluteErrorDeg < best.absoluteErrorDeg) best = hit;
+  }
+  if (!best) return null;
+
+  const refineStart = Math.ceil(Math.max(lo, best.time.getTime() - MINUTE) / SECOND) * SECOND;
+  const refineEnd = Math.floor(Math.min(hi, best.time.getTime() + MINUTE) / SECOND) * SECOND;
+  for (let t = refineStart; t <= refineEnd; t += SECOND) {
+    const hit = planCandidate(new Date(t), lat, lng, bearingDeg, phase);
+    if (hit.absoluteErrorDeg < best.absoluteErrorDeg) best = hit;
+  }
+  return best;
+}
+
+/**
+ * Closest sunrise/sunset golden-hour moments to an exact compass bearing.
+ * Scans each manual window at 1-minute resolution, then refines the winning
+ * minute to seconds.
+ */
+export function planSunBearing(options: SunBearingPlanOptions): SunBearingPlanHit[] {
+  const days = Math.max(0, Math.floor(options.days));
+  const bearingDeg = normDeg(options.bearingDeg);
+  const phases: ('sunrise' | 'sunset')[] = options.phase === 'both' ? ['sunrise', 'sunset'] : [options.phase];
+  const hits: SunBearingPlanHit[] = [];
+
+  for (let i = 0; i < days; i++) {
+    const day = new Date(options.startDate.getFullYear(), options.startDate.getMonth(), options.startDate.getDate() + i, 12);
+    const times = getTimes(day, options.lat, options.lng);
+    for (const phase of phases) {
+      const eventTime = times[phase];
+      if (!(eventTime instanceof Date) || Number.isNaN(eventTime.getTime())) continue;
+      const startOffset = phase === 'sunrise' ? options.sunriseOffsetStartMin ?? -30 : options.sunsetOffsetStartMin ?? -30;
+      const endOffset = phase === 'sunrise' ? options.sunriseOffsetEndMin ?? 60 : options.sunsetOffsetEndMin ?? 30;
+      const hit = closestInWindow(
+        options.lat,
+        options.lng,
+        bearingDeg,
+        phase,
+        eventTime.getTime() + startOffset * MINUTE,
+        eventTime.getTime() + endOffset * MINUTE,
+      );
+      if (hit) hits.push(hit);
+    }
+  }
+
+  return hits.sort((a, b) => a.time.getTime() - b.time.getTime());
+}
+
+/** The closest exact-bearing golden-hour alignment in the requested date range. */
+export function closestSunBearing(options: SunBearingPlanOptions): SunBearingPlanHit | null {
+  const hits = planSunBearing(options);
+  return hits.reduce<SunBearingPlanHit | null>((best, hit) =>
+    !best || hit.absoluteErrorDeg < best.absoluteErrorDeg ? hit : best,
+  null);
+}
+
 // --- good times -------------------------------------------------------------------
 
 /**

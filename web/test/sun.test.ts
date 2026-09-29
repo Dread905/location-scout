@@ -1,6 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { alignments, goodNow, phaseAt, SpotLike } from '../src/map/sun.js';
+import { getPosition } from 'suncalc';
+import {
+  alignments,
+  closestSunBearing,
+  displayedSunBearingHits,
+  goodNow,
+  phaseAt,
+  planSunBearing,
+  sunBearingSearchStart,
+  SUN_BEARING_SEARCH_DAYS,
+  SpotLike,
+  trueAltitude,
+} from '../src/map/sun.js';
 
 const BATHURST = { lat: -33.419, lng: 149.577 };
 const MIN = 60_000;
@@ -74,4 +86,106 @@ test('alignments: a west-facing spot gets sunset alignments near the equinox', (
 test('alignments: a north-facing spot gets no sunset alignment', () => {
   const found = alignments(spot({}, 0), new Date('2026-03-18T00:00:00Z'), 10, 10).filter((a) => a.body === 'sun');
   assert.equal(found.length, 0);
+});
+
+const compassSun = (date: Date, lat: number, lng: number) => {
+  const p = getPosition(date, lat, lng);
+  return {
+    azimuth: ((p.azimuth % 360) + 360) % 360,
+    altitude: trueAltitude(p.altitude),
+  };
+};
+
+test('planSunBearing: finds the exact entered sunrise bearing with seconds refinement', () => {
+  const exact = new Date('2026-06-20T21:08:37Z');
+  const target = compassSun(exact, BATHURST.lat, BATHURST.lng).azimuth;
+
+  const [hit] = planSunBearing({
+    lat: BATHURST.lat,
+    lng: BATHURST.lng,
+    bearingDeg: target,
+    phase: 'sunrise',
+    startDate: new Date('2026-06-21T00:00:00'),
+    days: 1,
+    sunriseOffsetStartMin: -20,
+    sunriseOffsetEndMin: 35,
+  });
+
+  assert.ok(hit, 'expected a sunrise bearing hit');
+  assert.equal(hit.phase, 'sunrise');
+  assert.ok(Math.abs(hit.time.getTime() - exact.getTime()) <= 1000, `${hit.time.toISOString()} should refine to the exact second`);
+  assert.ok(hit.absoluteErrorDeg < 0.02, `expected tiny bearing error, got ${hit.absoluteErrorDeg}`);
+  assert.equal(hit.absoluteErrorDeg, Math.abs(hit.signedErrorDeg));
+  assert.ok(hit.altitudeDeg > -1 && hit.altitudeDeg < 3);
+});
+
+test('planSunBearing: filters sunrise/sunset/both and honors per-phase manual windows', () => {
+  const target = compassSun(new Date('2026-03-20T07:00:00Z'), BATHURST.lat, BATHURST.lng).azimuth;
+
+  const sunsetOnly = planSunBearing({
+    lat: BATHURST.lat,
+    lng: BATHURST.lng,
+    bearingDeg: target,
+    phase: 'sunset',
+    startDate: new Date('2026-03-20T00:00:00'),
+    days: 3,
+    sunsetOffsetStartMin: -45,
+    sunsetOffsetEndMin: 20,
+  });
+  assert.ok(sunsetOnly.length > 0);
+  assert.ok(sunsetOnly.every((r) => r.phase === 'sunset'));
+
+  const both = planSunBearing({
+    lat: BATHURST.lat,
+    lng: BATHURST.lng,
+    bearingDeg: target,
+    phase: 'both',
+    startDate: new Date('2026-03-20T00:00:00'),
+    days: 2,
+    sunriseOffsetStartMin: 10,
+    sunriseOffsetEndMin: 11,
+    sunsetOffsetStartMin: -45,
+    sunsetOffsetEndMin: 20,
+  });
+  assert.deepEqual([...new Set(both.map((r) => r.phase))].sort(), ['sunrise', 'sunset']);
+  const sunriseHits = both.filter((r) => r.phase === 'sunrise');
+  assert.ok(sunriseHits.every((r) => r.time.getMinutes() >= 10 || r.time.getMinutes() <= 11), 'sunrise hits stay inside the narrow manual window');
+});
+
+test('closestSunBearing: returns the lowest-error sunrise or sunset across a full chosen year', () => {
+  const target = compassSun(new Date('2026-06-18T21:15:00Z'), BATHURST.lat, BATHURST.lng).azimuth;
+  const hit = closestSunBearing({
+    lat: BATHURST.lat,
+    lng: BATHURST.lng,
+    bearingDeg: target,
+    phase: 'both',
+    startDate: new Date('2026-01-01T00:00:00'),
+    days: 366,
+    sunriseOffsetStartMin: -60,
+    sunriseOffsetEndMin: 60,
+    sunsetOffsetStartMin: -60,
+    sunsetOffsetEndMin: 60,
+  });
+  assert.ok(hit, 'expected a closest alignment in the selected year');
+  assert.ok(hit.absoluteErrorDeg < 0.02, `expected near-exact alignment, got ${hit.absoluteErrorDeg}`);
+  assert.ok(hit.time >= new Date('2026-01-01T00:00:00'));
+});
+
+test('sunBearingSearchStart: anchors the fixed 365-day search to local today', () => {
+  const start = sunBearingSearchStart(new Date(2026, 8, 29, 18, 12, 30));
+  assert.equal(SUN_BEARING_SEARCH_DAYS, 365);
+  assert.equal(start.getFullYear(), 2026);
+  assert.equal(start.getMonth(), 8);
+  assert.equal(start.getDate(), 29);
+  assert.equal(start.getHours(), 0);
+  assert.equal(start.getMinutes(), 0);
+  assert.equal(start.getSeconds(), 0);
+  assert.equal(start.getMilliseconds(), 0);
+});
+
+test('displayedSunBearingHits: initially limits results to the two closest hits', () => {
+  const hits = ['closest', 'second', 'third', 'fourth'];
+  assert.deepEqual(displayedSunBearingHits(hits, false), ['closest', 'second']);
+  assert.deepEqual(displayedSunBearingHits(hits, true), hits);
+  assert.deepEqual(displayedSunBearingHits(['only'], false), ['only']);
 });
