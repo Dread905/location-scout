@@ -86,11 +86,6 @@ export class PlaceOutlineVertexMarkers<TMap extends HandleMap = HandleMap> {
 
   private addMarker(map: TMap, index: number, at: LngLat, onDrag: (index: number, at: LngLat) => void): MarkerLike<TMap> {
     const marker = this.options.makeMarker(index, at).addTo(map);
-    const stopMapGesture = (event: Event) => event.stopPropagation();
-    const el = marker.getElement();
-    el.addEventListener('pointerdown', stopMapGesture);
-    el.addEventListener('mousedown', stopMapGesture);
-    el.addEventListener('touchstart', stopMapGesture);
     marker.on('dragstart', () => map.dragPan?.disable());
     marker.on('drag', () => {
       const ll = marker.getLngLat();

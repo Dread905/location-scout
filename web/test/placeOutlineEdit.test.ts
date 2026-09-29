@@ -89,14 +89,30 @@ test('PlaceOutlineVertexMarkers: creates, updates, removes handles and reports d
   assert.equal(made[0].removed, true);
 });
 
+test('PlaceOutlineVertexMarkers: lets MapLibre marker start events bubble from handles', () => {
+  const made: FakeMarker[] = [];
+  const map = { dragPan: { disable() {}, enable() {} } };
+  const controller = new PlaceOutlineVertexMarkers({
+    makeMarker: (index, at) => {
+      const marker = new FakeMarker(index, at);
+      made.push(marker);
+      return marker;
+    },
+  });
+
+  controller.update(map, [[0, 0]], true, () => {});
+
+  const element = made[0].getElement() as unknown as FakeElement;
+  assert.equal(element.dispatch('mousedown'), false);
+  assert.equal(element.dispatch('touchstart'), false);
+});
+
 class FakeMarker implements MarkerLike<unknown> {
   lngLat: LngLat;
   addedTo: unknown = null;
   removed = false;
   private handlers = new Map<string, Array<() => void>>();
-  private element = {
-    addEventListener: (_type: string, _listener: EventListener) => {},
-  } as HTMLElement;
+  private element = new FakeElement() as unknown as HTMLElement;
 
   constructor(readonly index: number, at: LngLat) {
     this.lngLat = at;
@@ -133,5 +149,24 @@ class FakeMarker implements MarkerLike<unknown> {
 
   emit(type: string): void {
     for (const handler of this.handlers.get(type) ?? []) handler();
+  }
+}
+
+class FakeElement {
+  private listeners = new Map<string, EventListener[]>();
+
+  addEventListener(type: string, listener: EventListener): void {
+    const listeners = this.listeners.get(type) ?? [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  dispatch(type: string): boolean {
+    let stopped = false;
+    const event = {
+      stopPropagation: () => { stopped = true; },
+    } as Event;
+    for (const listener of this.listeners.get(type) ?? []) listener(event);
+    return stopped;
   }
 }

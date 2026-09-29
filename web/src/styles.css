@@ -312,7 +312,7 @@ input[type='checkbox'], input[type='radio'] { width: auto; accent-color: var(--a
 
 .facing-handle { width: 18px; height: 18px; border-radius: 50%; background: rgba(245, 166, 35, 0.35); border: 3px solid var(--accent); cursor: grab; }
 .facing-handle--unset { opacity: 0.5; border-style: dashed; }
-.place-vertex-handle { width: 16px; height: 16px; border-radius: 50%; background: #f8fafc; border: 3px solid #22c55e; box-shadow: 0 1px 6px rgba(15, 23, 42, 0.35); cursor: grab; }
+.place-vertex-handle { width: 16px; height: 16px; border-radius: 50%; background: #f8fafc; border: 3px solid #22c55e; box-shadow: 0 1px 6px rgba(15, 23, 42, 0.35); cursor: grab; touch-action: none; z-index: 5; }
 .place-vertex-handle:active { cursor: grabbing; }
 
 .editor-form label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 10px; }
