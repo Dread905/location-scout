@@ -30,7 +30,7 @@ export function buildRailPassPopupHtml(result: TrainPassesResponse, now = new Da
 function localTime(iso: string, now: Date): string {
   const d = new Date(iso);
   const sameDay = d.toDateString() === now.toDateString();
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + (sameDay ? '' : ` ${d.toLocaleDateString([], { month: 'short', day: 'numeric' })}`);
+  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) + (sameDay ? '' : ` ${d.toLocaleDateString([], { month: 'short', day: 'numeric' })}`);
 }
 
 function escapeHtml(s: string): string {
