@@ -2,7 +2,7 @@ import { groupLayers, type LegendLayer } from './legend.js';
 
 const RAIL_BASE = 'rail-base';
 const HIGHLIGHT = {
-  'line-color': '#f8fafc',
+  'line-color': '#f5a623',
   'line-width': 4,
   'line-opacity': 0.95,
 } as const;

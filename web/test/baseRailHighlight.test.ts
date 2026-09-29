@@ -57,7 +57,7 @@ test('applyBaseRailHighlight snapshots and restores only changed base rail paint
   const map = new FakeMap(layers);
   const snapshot = applyBaseRailHighlight(map);
 
-  assert.equal(map.paint.get('road_major_rail')?.['line-color'], '#f8fafc');
+  assert.equal(map.paint.get('road_major_rail')?.['line-color'], '#f5a623');
   assert.equal(map.paint.get('road_major_rail')?.['line-width'], 4);
   assert.equal(map.paint.get('road_major_rail')?.['line-opacity'], 0.95);
   assert.deepEqual(map.paint.get('road_minor'), { 'line-color': '#999' });
