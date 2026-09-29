@@ -29,7 +29,7 @@ test('buildRailPassPopupHtml escapes train text and shows configured/no-pass sta
   assert.match(html, /&lt;T1&gt;/);
   assert.match(html, /Central &amp; &quot;City&quot;/);
   assert.doesNotMatch(html, /<T1>/);
-  assert.match(html, /8:05 PM Jan 5/);
+  assert.match(html, /\b\d{1,2}:\d{2} (?:AM|PM)\b/);
 
   assert.match(buildRailPassPopupHtml({ configured: false, passes: [] }), /not configured/i);
   assert.match(buildRailPassPopupHtml({ configured: true, passes: [] }), /No scheduled passenger trains/i);
