@@ -482,11 +482,20 @@ fieldset.bare { border: 0; padding: 0; margin: 0; }
 .glance__tags span { background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--pill); padding: 0 7px; font-size: 11px; }
 .glance__notes { color: var(--text); opacity: 0.85; line-height: 1.35; }
 
-/* All map popups: dark glass so light text stays readable */
-.maplibregl-popup-content { background: var(--panel, #171a21); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm, 8px); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45); font-size: 13px; }
-.maplibregl-popup-content b, .maplibregl-popup-content strong { color: var(--text); }
-.maplibregl-popup-close-button { color: var(--muted); font-size: 16px; padding: 0 6px; }
-.maplibregl-popup-close-button:hover { color: var(--text); background: none; }
+/* All map popups: MapLibre's injected stylesheet loads after the global link, so make the readable dark treatment explicit. */
+.maplibregl-popup-content {
+  background: #171a21 !important;
+  color: #e9ecf3 !important;
+  border: 1px solid #2a2f3b !important;
+  border-radius: var(--radius-sm, 8px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  font-size: 13px;
+}
+.maplibregl-popup-content b,
+.maplibregl-popup-content strong { color: #e9ecf3 !important; }
+.maplibregl-popup-content span { color: #c6cfdd !important; }
+.maplibregl-popup-close-button { color: #c6cfdd !important; font-size: 16px; padding: 0 6px; }
+.maplibregl-popup-close-button:hover { color: #fff !important; background: none; }
 .maplibregl-popup-anchor-bottom .maplibregl-popup-tip { border-top-color: var(--border); }
 .maplibregl-popup-anchor-top .maplibregl-popup-tip { border-bottom-color: var(--border); }
 .maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: var(--border); }
