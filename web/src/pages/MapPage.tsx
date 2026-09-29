@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { GeoJSONSource, LngLatBounds, Map as MlMap, MapMouseEvent, NavigationControl, Popup, ScaleControl, setWorkerUrl } from 'maplibre-gl';
+import { GeoJSONSource, LngLatBounds, Map as MlMap, MapMouseEvent, Marker, NavigationControl, Popup, ScaleControl, setWorkerUrl } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import { api, Candidate, Place, Plane, Spot, TrainPosition, User, type WeatherForecast } from '../api.js';
@@ -26,6 +26,7 @@ import SpotEditor, { SpotDraft } from '../components/SpotEditor.js';
 import PlaceEditor, { draftToPlace, PlaceDraft, placeToDraft } from '../components/PlaceEditor.js';
 import { emptyGoodTimes } from '../components/GoodTimesEditor.js';
 import DayStrip from '../components/DayStrip.js';
+import { insertVertexOnNearestSegment, moveOutlineVertex, PlaceOutlineVertexMarkers } from '../map/placeOutlineEdit.js';
 
 type Selection = { type: 'spot' | 'place' | 'candidate'; id: string } | null;
 type Editing = { type: 'spot'; draft: SpotDraft } | { type: 'place'; draft: PlaceDraft } | null;
@@ -409,9 +410,27 @@ export default function MapPage({ user }: { user: User | null }) {
   useEffect(() => { if (map) setTerrain3d(map, terrain); }, [map, terrain]);
 
   const placeDraft = editing?.type === 'place' ? editing.draft : null;
+  const placeDraftRef = useRef<PlaceDraft | null>(null);
+  placeDraftRef.current = placeDraft;
+  const vertexMarkers = useRef(new PlaceOutlineVertexMarkers<MlMap>({
+    makeMarker: (_index, at) => {
+      const el = document.createElement('div');
+      el.className = 'place-vertex-handle';
+      el.title = 'Drag to move this outline point';
+      return new Marker({ element: el, draggable: true }).setLngLat(at);
+    },
+  }));
   useEffect(() => {
     if (map) updateDraft(map, placeDraft?.coords ?? [], placeDraft?.kind ?? 'polygon');
   }, [map, placeDraft]);
+  useEffect(() => {
+    vertexMarkers.current.update(map, placeDraft?.coords ?? [], mode === 'draw' && !!placeDraft && placeDraft.coords.length > 0, (index, at) => {
+      const draft = placeDraftRef.current;
+      if (!draft) return;
+      setEditing({ type: 'place', draft: { ...draft, coords: moveOutlineVertex(draft.coords, index, at) } });
+    });
+  }, [map, placeDraft, mode]);
+  useEffect(() => () => vertexMarkers.current.clear(), [map]);
 
   // --- clicks ---
   const onClick = useRef<(e: MapMouseEvent) => void>(() => {});
@@ -426,7 +445,15 @@ export default function MapPage({ user }: { user: User | null }) {
       return;
     }
     if (mode === 'draw' && placeDraft) {
-      const coords = [...placeDraft.coords, [lng, lat] as [number, number]];
+      const inserted = insertVertexOnNearestSegment(placeDraft.coords, placeDraft.kind, e.point, {
+        project: (at) => map.project(at),
+        unproject: (point) => {
+          const ll = map.unproject([point.x, point.y]);
+          return [ll.lng, ll.lat];
+        },
+        tolerancePx: 10,
+      });
+      const coords = inserted?.coords ?? [...placeDraft.coords, [lng, lat] as [number, number]];
       setEditing({ type: 'place', draft: { ...placeDraft, coords, ...(placeDraft.coords.length ? {} : { lat, lng }) } });
       return;
     }
@@ -564,7 +591,7 @@ export default function MapPage({ user }: { user: User | null }) {
         </div>
       )}
       {followNote && !follow && <div className="maptoast">{followNote}</div>}
-      {mode !== 'browse' && <div className="maptoast">{mode === 'pick-spot' ? 'Click the map to place the spot' : 'Click the map to add outline points'}</div>}
+      {mode !== 'browse' && <div className="maptoast">{mode === 'pick-spot' ? 'Click the map to place the spot' : 'Click the map to add or edit outline points'}</div>}
 
       <Legend map={map} vis={vis} onToggle={toggle} />
       <NearbyList planes={planesOn ? planeData : null} trains={trainsOn ? trainData : null} centre={centre}

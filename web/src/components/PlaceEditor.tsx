@@ -28,7 +28,7 @@ export function draftToPlace(d: PlaceDraft): Partial<Place> {
   return { name: d.name.trim(), notes: d.notes, access: d.access, visibility: d.visibility, lat, lng, geom };
 }
 
-/** Place form. The outline is drawn by clicking the map while `drawing` is on; no draw library. */
+/** Place form. The outline is edited by clicking and dragging on the map while `drawing` is on; no draw library. */
 export default function PlaceEditor({ draft, drawing, onDrawing, onChange, onSave, onCancel, onDelete }: {
   draft: PlaceDraft;
   drawing: boolean;
@@ -66,11 +66,11 @@ export default function PlaceEditor({ draft, drawing, onDrawing, onChange, onSav
         <button type="button" className={draft.kind === 'line' ? 'active' : ''} onClick={() => set({ kind: 'line' })}>Line (track)</button>
       </div>
       <div className="chiprow mt-8">
-        <button type="button" className={drawing ? 'primary' : ''} onClick={() => onDrawing(!drawing)}>{drawing ? 'Done drawing' : 'Draw on map'}</button>
+        <button type="button" className={drawing ? 'primary' : ''} onClick={() => onDrawing(!drawing)}>{drawing ? 'Done editing' : 'Edit on map'}</button>
         <button type="button" disabled={!draft.coords.length} onClick={() => set({ coords: draft.coords.slice(0, -1) })}>Undo point</button>
         <button type="button" disabled={!draft.coords.length} onClick={() => set({ coords: [] })}>Clear</button>
       </div>
-      <p className="hint">{drawing ? 'Click the map to add points.' : `${draft.coords.length} points.`} No outline is fine too: the place then sits where you first clicked.</p>
+      <p className="hint">{drawing ? 'Click to add points, click a segment to insert one, or drag a handle to move a point.' : `${draft.coords.length} points.`} No outline is fine too: the place then sits where you first clicked.</p>
 
       <label>Access<textarea rows={2} value={draft.access} placeholder="Parking, gates, opening hours…" onChange={(e) => set({ access: e.target.value })} /></label>
       <label>Notes<textarea rows={3} value={draft.notes} onChange={(e) => set({ notes: e.target.value })} /></label>
