@@ -23,23 +23,20 @@ const route = (patch: Partial<Route>): Route => ({
   ...patch,
 });
 
-test('routeFeatureCollections emits directed segments with selectable metadata', () => {
+test('routeFeatureCollections emits one selectable directed LineString per route', () => {
   const { segments } = routeFeatureCollections([route({ type: 'circuit' })], 'r1');
 
-  assert.equal(segments.features.length, 3);
+  assert.equal(segments.features.length, 1);
   assert.deepEqual(segments.features[0].properties, {
     id: 'r1',
     routeId: 'r1',
-    segIndex: 0,
     type: 'circuit',
-    isClosing: false,
     selected: true,
   });
-  assert.deepEqual(segments.features[2].geometry, {
+  assert.deepEqual(segments.features[0].geometry, {
     type: 'LineString',
-    coordinates: [[151.3, -33.3], [151.1, -33.1]],
+    coordinates: [[151.1, -33.1], [151.2, -33.2], [151.3, -33.3], [151.1, -33.1]],
   });
-  assert.equal(segments.features[2].properties?.isClosing, true);
 });
 
 test('routeFeatureCollections emits staging points only when a route has staging coordinates', () => {
@@ -51,6 +48,14 @@ test('routeFeatureCollections emits staging points only when a route has staging
   assert.equal(staging.features.length, 1);
   assert.deepEqual(staging.features[0].properties, { id: 'with-stage', routeId: 'with-stage', selected: true });
   assert.deepEqual(staging.features[0].geometry, { type: 'Point', coordinates: [151.4, -33.4] });
+});
+
+test('routeFeatureCollections keeps a long route as one LineString instead of one feature per leg', () => {
+  const vertices = Array.from({ length: 1_001 }, (_, i) => [151 + i / 10_000, -33 - i / 10_000] as [number, number]);
+  const { segments } = routeFeatureCollections([route({ vertices })], null);
+
+  assert.equal(segments.features.length, 1);
+  assert.deepEqual(segments.features[0].geometry, { type: 'LineString', coordinates: vertices });
 });
 
 test('route animation palette changes foreground by sun altitude and keeps opposite halo contrast', () => {

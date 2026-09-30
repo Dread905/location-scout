@@ -234,7 +234,7 @@ export default function MapPage({ user }: { user: User | null }) {
           return pose ? { ...p, lat: pose.lat, lon: pose.lng } : p;
         }), planeExtras.current.sun);
       }
-      stepRouteDashAnimation(map, routeDashState.current, 0.01, sunPos(timeRef.current, map.getCenter().lat, map.getCenter().lng).altitude);
+      stepRouteDashAnimation(map, routeDashState.current, 0.01, sunPos(timeRef.current, map.getCenter().lat, map.getCenter().lng).altitude, now);
       if (trains.length && !hiddenLayers.has('trains')) {
         const moved = trains.map((t) => ({ t, pose: trainMotion.current.pose(t.tripId, now) }));
         updateTrains(map, moved.map(({ t, pose }) => (pose ? { ...t, lat: pose.lat, lng: pose.lng } : t)));

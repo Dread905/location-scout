@@ -9,16 +9,15 @@
  * - 'route-dash-casing' + 'route-dashes': animated direction pulse with an
  *   opposite-colour casing and a time-aware foreground.
  *
- * The map source 'routes' is a GeoJSON LineString FeatureCollection where each
- * Feature represents one directed leg (segment), carrying properties:
- *   routeId, segIndex, type ('sprint'|'circuit'), isClosing (circuit's last leg).
+ * The map source 'routes' is a GeoJSON LineString FeatureCollection with one
+ * Feature per route. Keeping long routes intact avoids multiplying a 1,000-point
+ * route into 999 independent feature/layer evaluations.
  *
- * Vertex handles during editing come from PlaceOutlineVertexMarkers with kind='line'.
+ * Vertex handles during editing are driven by the RouteEditor UI layer.
  */
 import type { Map as MlMap } from 'maplibre-gl';
 import { GeoJSONSource } from 'maplibre-gl';
 import type { Route } from '../api.js';
-import { buildRouteSegments } from './routeGeometry.js';
 
 export const ROUTE_LAYERS = ['route-glow', 'route-casing', 'route-lines', 'route-dash-casing', 'route-dashes', 'route-staging-halo', 'route-staging'] as const;
 
@@ -156,31 +155,26 @@ export function routeFeatureCollections(routes: Route[], selectedId: string | nu
   const stagingFeatures: GeoJSON.Feature[] = [];
 
   for (const route of routes) {
-    const segs = buildRouteSegments(route.vertices, route.type);
-    const selected = route.id === selectedId;
-    segs.forEach((seg, i) => {
-      const isClosing = route.type === 'circuit' && i === segs.length - 1;
+    if (route.vertices.length >= 2) {
+      const coordinates = route.type === 'circuit'
+        ? [...route.vertices, route.vertices[0]]
+        : route.vertices;
       features.push({
         type: 'Feature',
         properties: {
           id: route.id,
           routeId: route.id,
-          segIndex: i,
           type: route.type,
-          isClosing,
-          selected,
+          selected: route.id === selectedId,
         },
-        geometry: {
-          type: 'LineString',
-          coordinates: [seg[0], seg[1]],
-        },
+        geometry: { type: 'LineString', coordinates },
       });
-    });
+    }
 
     if (route.staging) {
       stagingFeatures.push({
         type: 'Feature',
-        properties: { id: route.id, routeId: route.id, selected },
+        properties: { id: route.id, routeId: route.id, selected: route.id === selectedId },
         geometry: { type: 'Point', coordinates: [route.staging.lng, route.staging.lat] },
       });
     }
@@ -203,19 +197,19 @@ export function updateRoutes(map: MlMap, routes: Route[], selectedId: string | n
   stagSrc.setData(staging);
 }
 
-/**
- * Advance the dash-animation one frame.
- *
- * Call this from a requestAnimationFrame loop. The dasharray phase shifts by
- * `speed` per call. `dashLength` and `gapLength` control the visual rhythm.
- */
+const DASH_FRAME_MS = 120;
+
+/** Advance the direction pulse without forcing a paint update every viewport frame. */
 export function stepRouteDashAnimation(
   map: MlMap,
-  state: { phase: number },
+  state: { phase: number; lastPaintAt?: number },
   speed = 0.01,
   sunAltitudeDeg = 30,
+  now = performance.now(),
 ): void {
-  if (!map.getLayer(ROUTE_DASH_LAYER)) return;
+  if (!map.getLayer(ROUTE_DASH_LAYER) || map.getLayoutProperty(ROUTE_DASH_LAYER, 'visibility') === 'none') return;
+  if (now - (state.lastPaintAt ?? -Infinity) < DASH_FRAME_MS) return;
+  state.lastPaintAt = now;
   state.phase = (state.phase + speed) % 1;
   const palette = routeDashPalette(sunAltitudeDeg);
   if (map.getLayer(ROUTE_DASH_CASING_LAYER)) {
