@@ -127,6 +127,21 @@ CREATE TABLE IF NOT EXISTS kv (
   expires_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS routes (
+  id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  notes TEXT NOT NULL DEFAULT '',
+  access TEXT NOT NULL DEFAULT '',
+  type TEXT NOT NULL DEFAULT 'sprint',
+  vertices TEXT NOT NULL DEFAULT '[]',
+  staging TEXT,
+  visibility TEXT NOT NULL DEFAULT 'private',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_routes_owner ON routes(owner_id);
+
 -- GTFS static data for trains, filtered at import time to trips touching a
 -- configured area. One feed's rows share the 'feed' column ('nswtrains' | 'sydneytrains').
 CREATE TABLE IF NOT EXISTS gtfs_routes (

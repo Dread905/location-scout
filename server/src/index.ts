@@ -33,6 +33,7 @@ import { assertPublicUrl, guardedFetch } from './ssrf.js';
 import { tasks } from './tasks/tasks.js';
 import { runDueTasksOnStartup, startScheduler } from './tasks/scheduler.js';
 import { versionInfo } from './version.js';
+import { isRouteType, parseRouteStaging, parseRouteVertices, routeJson, type RouteRow } from './routes.js';
 import crypto from 'node:crypto';
 
 declare global {
@@ -803,6 +804,81 @@ app.get('/api/spots/:id/commons', async (req, res, next) => {
     if (!spot || !canRead(spot.visibility, spot.owner_id, req.user)) return res.status(404).json({ error: 'Not found' });
     res.json(await commonsNearbyCached(db, spot.lat, spot.lng));
   } catch (err) { next(err); }
+});
+
+// --- routes -----------------------------------------------------------------
+
+app.get('/api/routes', (req, res) => {
+  const { sql, params } = listVisibilityWhere(req.user);
+  const rows = db.handle.prepare(`SELECT * FROM routes WHERE ${sql} ORDER BY name`).all(...params) as unknown as RouteRow[];
+  res.json(rows.map(routeJson));
+});
+
+app.post('/api/routes', (req, res) => {
+  const b = req.body as Record<string, unknown>;
+  if (typeof b.name !== 'string' || !b.name.trim()) return res.status(400).json({ error: 'name is required' });
+  let vertices;
+  let staging;
+  try {
+    vertices = parseRouteVertices(b.vertices);
+    staging = parseRouteStaging(b.staging);
+  } catch (err) {
+    return res.status(400).json({ error: (err as Error).message });
+  }
+  const type = isRouteType(b.type) ? b.type : 'sprint';
+  const visibility = isVisibility(b.visibility) ? b.visibility : 'private';
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  db.handle
+    .prepare('INSERT INTO routes (id, owner_id, name, notes, access, type, vertices, staging, visibility, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(id, req.user!.id, b.name.trim(), String(b.notes ?? ''), String(b.access ?? ''), type,
+      JSON.stringify(vertices), staging ? JSON.stringify(staging) : null, visibility, now, now);
+  res.status(201).json(routeJson(db.handle.prepare('SELECT * FROM routes WHERE id = ?').get(id) as unknown as RouteRow));
+});
+
+app.get('/api/routes/:id', (req, res) => {
+  const row = db.handle.prepare('SELECT * FROM routes WHERE id = ?').get(req.params.id) as unknown as RouteRow | undefined;
+  if (!row || !canRead(row.visibility, row.owner_id, req.user)) return res.status(404).json({ error: 'Not found' });
+  res.json(routeJson(row));
+});
+
+app.patch('/api/routes/:id', (req, res) => {
+  const row = db.handle.prepare('SELECT * FROM routes WHERE id = ?').get(req.params.id) as unknown as RouteRow | undefined;
+  if (!row) return res.status(404).json({ error: 'Not found' });
+  if (!canEdit(row.owner_id, req.user)) return res.status(403).json({ error: 'Forbidden' });
+  const b = req.body as Record<string, unknown>;
+  let vertices = row.vertices;
+  let staging = row.staging;
+  try {
+    if (b.vertices !== undefined) vertices = JSON.stringify(parseRouteVertices(b.vertices));
+    if (b.staging !== undefined) {
+      const parsed = parseRouteStaging(b.staging);
+      staging = parsed ? JSON.stringify(parsed) : null;
+    }
+  } catch (err) {
+    return res.status(400).json({ error: (err as Error).message });
+  }
+  const next = {
+    name: typeof b.name === 'string' ? b.name.trim() : row.name,
+    notes: typeof b.notes === 'string' ? b.notes : row.notes,
+    access: typeof b.access === 'string' ? b.access : row.access,
+    type: isRouteType(b.type) ? b.type : row.type,
+    vertices,
+    staging,
+    visibility: isVisibility(b.visibility) ? b.visibility : row.visibility,
+  };
+  db.handle
+    .prepare('UPDATE routes SET name=?, notes=?, access=?, type=?, vertices=?, staging=?, visibility=?, updated_at=? WHERE id=?')
+    .run(next.name, next.notes, next.access, next.type, next.vertices, next.staging, next.visibility, new Date().toISOString(), row.id);
+  res.json(routeJson(db.handle.prepare('SELECT * FROM routes WHERE id = ?').get(row.id) as unknown as RouteRow));
+});
+
+app.delete('/api/routes/:id', (req, res) => {
+  const row = db.handle.prepare('SELECT * FROM routes WHERE id = ?').get(req.params.id) as unknown as RouteRow | undefined;
+  if (!row) return res.status(404).json({ error: 'Not found' });
+  if (!canEdit(row.owner_id, req.user)) return res.status(403).json({ error: 'Forbidden' });
+  db.handle.prepare('DELETE FROM routes WHERE id = ?').run(row.id);
+  res.json({ ok: true });
 });
 
 // --- 404 + error handling, then the built frontend -------------------------------

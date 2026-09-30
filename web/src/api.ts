@@ -117,6 +117,24 @@ export interface Remote {
   created_at: string;
 }
 
+export type RouteType = 'sprint' | 'circuit';
+
+export interface Route {
+  id: string;
+  ownerId: string;
+  name: string;
+  notes: string;
+  access: string;
+  type: RouteType;
+  /** Ordered [lng, lat] coordinate pairs. */
+  vertices: [number, number][];
+  /** Optional off-route staging location; used as planning anchor if present. */
+  staging: { lat: number; lng: number } | null;
+  visibility: Visibility;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // --- phase 3: feeds ---
 
 export interface Plane { hex: string; flight: string; lat: number; lon: number; track: number | null; gs: number | null; alt_baro: number | null; t: string; seen: number }
@@ -313,4 +331,13 @@ export const api = {
 
   // --- Event Scout test (TfNSW status is under "trains" above; never the key itself) ---
   testEventScout: (url: string) => fetch(`/api/eventscout/test?url=${encodeURIComponent(url)}`).then((r) => json<{ ok: boolean; message: string }>(r)),
+
+  // --- routes ---
+  routes: () => fetch('/api/routes').then((r) => json<Route[]>(r)),
+  route: (id: string) => fetch(`/api/routes/${id}`).then((r) => json<Route>(r)),
+  createRoute: (route: Partial<Route>) =>
+    fetch('/api/routes', { method: 'POST', headers: jsonHeaders, body: JSON.stringify(route) }).then((r) => json<Route>(r)),
+  updateRoute: (id: string, route: Partial<Route>) =>
+    fetch(`/api/routes/${id}`, { method: 'PATCH', headers: jsonHeaders, body: JSON.stringify(route) }).then((r) => json<Route>(r)),
+  deleteRoute: (id: string) => fetch(`/api/routes/${id}`, { method: 'DELETE' }).then((r) => json<{ ok: boolean }>(r)),
 };

@@ -56,6 +56,8 @@ export const CATEGORIES: Category[] = [
   { key: 'terrain', label: 'Terrain shading', group: 'Overlays', swatch: 'fill', color: '#5a5f6e', defaultOn: true, match: ids('hillshade', 'terrain-shadow') },
   { key: 'shadows', label: 'Building shadows', group: 'Overlays', swatch: 'fill', color: '#0a0c1a', paintProp: 'fill-color', defaultOn: true, match: ids('shadows') },
   { key: 'outlines', label: 'Place outlines', group: 'Overlays', swatch: 'line', color: '#f5a623', paintProp: 'line-color', defaultOn: true, match: ids('place-fill', 'place-line') },
+  { key: 'routes', label: 'Routes', group: 'Overlays', swatch: 'dashed', color: '#f97316', paintProp: 'line-color', defaultOn: true,
+    match: ids('route-glow', 'route-casing', 'route-lines', 'route-dash-casing', 'route-dashes', 'route-staging-halo', 'route-staging') },
   { key: 'sun', label: 'Sun/moon rays & light wedges', group: 'Overlays', swatch: 'line', color: '#ffd23f', defaultOn: true, match: ids('rays', 'wedges') },
   { key: 'rail', label: 'Rail network', group: 'Overlays', swatch: 'line', color: '#4cc3ff', defaultOn: false, match: ids('rail-lines', 'rail-industrial') },
   { key: 'trains', label: 'Trains', group: 'Overlays', swatch: 'ring', color: '#22c55e', defaultOn: false, match: ids('trains') },

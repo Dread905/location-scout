@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { api, Plane, Settings, Spot, TrainPass } from '../api.js';
+import { api, Plane, Route, Settings, Spot, TrainPass } from '../api.js';
 import { haversineKm } from '../map/geo.js';
 import { Alignment, alignments, moonPhase, nextGoodWindow, PHASE_LABEL, Phase, sunriseSunset } from '../map/sun.js';
 import { hhmm, hhmm24, ymd } from '../time.js';
@@ -11,6 +11,7 @@ import type { Footprint } from '../map/shadows.js';
 import { CRITERIA, DEFAULT_CRITERIA, parseCriteria, railDistanceKm, recommend, weatherAt, type Criterion, type Recommendation, type WeatherHour, type WeatherResponse } from '../map/recommend.js';
 import { fetchWeather } from './planWeather.js';
 import { MAP_CENTRE_KEY } from './MapPage.js';
+import { routePlanAnchor } from '../map/routeGeometry.js';
 
 const ALIGN_BONUS_H = 12;
 const CROWD_LOOKUP_CAP = 50; // ponytail: one Event Scout lookup per spot; fine at personal-app scale, cap avoids hammering it on a big radius
@@ -118,12 +119,14 @@ export default function PlanShoot() {
   const [from, setFrom] = useState<'home' | 'map'>('home');
   const [radiusKm, setRadiusKm] = useState(50);
   const [spots, setSpots] = useState<Spot[] | null>(null);
+  const [routes, setRoutes] = useState<Route[]>([]);
   const [crowdScores, setCrowdScores] = useState<Record<string, number>>({});
   const [error, setError] = useState('');
   const [spotQuery, setSpotQuery] = useState('');
   const [copied, setCopied] = useState(false);
 
   useEffect(() => { api.settings().then(setSettings).catch((err) => setError((err as Error).message)); }, []);
+  useEffect(() => { api.routes().then(setRoutes).catch(() => {}); }, []);
   const origin = from === 'map' ? readCentre() ?? settings?.home : settings?.home;
 
   useEffect(() => {
@@ -155,10 +158,14 @@ export default function PlanShoot() {
 
   const [linkedSpot, setLinkedSpot] = useState<Spot | null>(null);
   const spotId = params.get('spot');
+  const routeId = params.get('route');
   useEffect(() => {
     if (spotId && spots && !spots.some((s) => s.id === spotId)) api.spot(spotId).then(setLinkedSpot).catch(() => {});
   }, [spotId, spots]);
-  const plan = spots?.find((s) => s.id === spotId) ?? (linkedSpot?.id === spotId ? linkedSpot : null) ?? rows[0]?.spot ?? null;
+  const planRoute = routeId ? routes.find((r) => r.id === routeId) ?? null : null;
+  const routeAnchor = planRoute ? routePlanAnchor(planRoute.vertices, planRoute.staging) : null;
+  const routePlan = planRoute && routeAnchor ? { id: planRoute.id, name: planRoute.name, lat: routeAnchor.lat, lng: routeAnchor.lng, facingDeg: null, notes: planRoute.notes } as Spot : null;
+  const plan = routePlan ?? (routeId ? null : spots?.find((s) => s.id === spotId) ?? (linkedSpot?.id === spotId ? linkedSpot : null) ?? rows[0]?.spot ?? null);
 
   // --- per-spot data -------------------------------------------------------------------
   const [terrain, setTerrain] = useState<ShadeTest | null | 'loading'>('loading');
@@ -192,6 +199,7 @@ export default function PlanShoot() {
   useEffect(() => {
     if (!plan) return;
     setPasses(null);
+    if (routeId) { setPasses({ configured: false, passes: [] }); return; }
     api.spotTrains(plan.id, trainHours).then(setPasses).catch(() => setPasses({ configured: false, passes: [] }));
   }, [plan?.id, trainHours]);
   const loadPlanes = () => {
@@ -236,7 +244,7 @@ export default function PlanShoot() {
   };
   const shareUrl = () => {
     const p = new URLSearchParams(params);
-    if (plan) p.set('spot', plan.id);
+    if (routeId) { p.set('route', routeId); p.delete('spot'); } else if (plan) p.set('spot', plan.id);
     p.set('from', ymd(fromDay)); p.set('days', String(days)); p.set('crit', criteria.join(','));
     p.set('at', localIso(focus));
     return `${location.origin}${location.pathname}?${p}`;
@@ -266,11 +274,12 @@ export default function PlanShoot() {
       </div>
 
       <div className="plan__controls no-print">
-        <label className="plan__field plan__field--spot">Spot
-          <select value={plan?.id ?? ''} onChange={(e) => set({ spot: e.target.value, at: null })} aria-label="Spot">
+        <label className="plan__field plan__field--spot">Target
+          <select value={routeId ? `route:${routeId}` : plan ? `spot:${plan.id}` : ''} onChange={(e) => { const [kind, id] = e.target.value.split(':'); set(kind === 'route' ? { route: id, spot: null, at: null } : { spot: id, route: null, at: null }); }} aria-label="Target">
             {!plan && <option value="">{spots ? 'No spots' : 'Loading…'}</option>}
             {plan && !rows.some((r) => r.spot.id === plan.id) && <option value={plan.id}>{plan.name}</option>}
-            {rows.map((r) => <option key={r.spot.id} value={r.spot.id}>{r.spot.name} · {r.km.toFixed(0)} km</option>)}
+            {rows.map((r) => <option key={r.spot.id} value={`spot:${r.spot.id}`}>{r.spot.name} · {r.km.toFixed(0)} km</option>)}
+            {routes.map((r) => <option key={r.id} value={`route:${r.id}`}>{r.name} · route</option>)}
           </select>
         </label>
         <label className="plan__field">From
@@ -308,7 +317,7 @@ export default function PlanShoot() {
       </nav>
 
       <div className="no-print">
-        {!plan && tab !== 'spots' && spots && <div className="empty">No spots within {radiusKm} km. Try the Spots tab to widen the radius.</div>}
+        {!plan && tab !== 'spots' && spots && <div className="empty">No target selected. Pick a spot or route.</div>}
 
         {plan && tab === 'rec' && (
           <section>

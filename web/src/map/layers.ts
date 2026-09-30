@@ -13,6 +13,7 @@ import { Trains3dLayer, trainsNo3d, type Train3d } from './trains3dLayer.js';
 import { registerTerrainShadowProtocol, setBuildingShadows, setTerrainShadowSun, setTerrainShadowTerrain, SHADOW_RASTER_MAX_Z } from './terrainShadowSource.js';
 import { RADAR_MAX_NATIVE_Z } from './weather.js';
 import { moodAt, moonPos, sunPos, sunriseSunset } from './sun.js';
+import { initRouteLayers } from './routeLayer.js';
 
 export const STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
 const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
@@ -94,6 +95,9 @@ export function initLayers(map: MlMap) {
   map.addLayer({ id: 'draft-line', type: 'line', source: 'draft', filter: ['!=', ['geometry-type'], 'Point'], paint: { 'line-color': '#4ade80', 'line-width': 2, 'line-dasharray': [2, 1] } });
   map.addLayer({ id: 'draft-pts', type: 'circle', source: 'draft', filter: ['==', ['geometry-type'], 'Point'],
     paint: { 'circle-radius': 5, 'circle-color': '#4ade80', 'circle-stroke-color': '#0e1014', 'circle-stroke-width': 2 } });
+
+  // Persisted route overlays live above the base style and below map labels.
+  initRouteLayers(map, firstSymbol);
 
   map.addSource('place-points', { type: 'geojson', data: empty() });
   map.addLayer({ id: 'place-points', type: 'circle', source: 'place-points', maxzoom: CHILD_SPOT_ZOOM,
@@ -330,7 +334,7 @@ export function updateCandidates(map: MlMap, candidates: { id: string; name: str
   })) });
 }
 
-export const CLICKABLE = ['spot-thumbs', 'place-spot-thumbs', 'spot-points', 'place-spots', 'clusters', 'place-points', 'place-fill', 'place-line', 'candidates'];
+export const CLICKABLE = ['spot-thumbs', 'place-spot-thumbs', 'spot-points', 'place-spots', 'clusters', 'place-points', 'place-fill', 'place-line', 'candidates', 'route-lines', 'route-staging'];
 
 export function setImagery(map: MlMap, on: boolean) {
   map.setLayoutProperty('imagery', 'visibility', on ? 'visible' : 'none');
